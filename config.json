@@ -1,6 +1,0 @@
-{
-  "storage": {
-    "spillThreshold": 0,
-    "dataDirectory": "out"
-  }
-}

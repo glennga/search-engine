@@ -1,5 +1,12 @@
+import __init__
 import argparse
 import json
+import sys
+import datetime
+
+
+logger = __init__.get_logger('Index')
+
 
 
 class Tokenizer:
@@ -36,7 +43,7 @@ class Indexer:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Build an inverted index given some corpus.')
     parser.add_argument('corpus', type=str, help='Location of the corpus to index.')
-    parser.add_argument('--config', type=str, default='config.json', help='Path to the config file.')
+    parser.add_argument('--config', type=str, default='config/index.json', help='Path to the config file.')
     command_line_args = parser.parse_args()
     with open(command_line_args.config) as config_file:
         main_config_json = json.load(config_file)
