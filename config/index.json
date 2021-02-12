@@ -1,6 +1,6 @@
 {
   "storage": {
-    "spillThreshold": 0,
+    "spillThreshold": 1000,
     "spillDirectory": "out/spill",
     "dataDirectory": "out/data"
   }
