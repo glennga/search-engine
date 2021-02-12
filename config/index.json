@@ -2,6 +2,7 @@
   "storage": {
     "spillThreshold": 1000,
     "spillDirectory": "out/spill",
-    "dataDirectory": "out/data"
+    "dataDirectory": "out/data",
+    "skipProbability": 0.5
   }
 }
