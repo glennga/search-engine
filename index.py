@@ -83,7 +83,6 @@ class Tokenizer:
             return list()
 
         tokens = list(tokens.values())
-        print("Tokens in docID {docID}: {tokens}")
         return tokens
 
 
