@@ -74,10 +74,11 @@ class StorageHandler:
        memory. TODO: See if this is a valid assumption...
 
     """
-    def __init__(self, **kwargs):
+    def __init__(self, corpus, **kwargs):
         self.merge_queue = deque()
         self.memory_component = dict()
         self.config = kwargs
+        self.corpus = corpus
 
     def write(self, token, entry):
         """ Store an index entry with respect to a single document.
@@ -252,8 +253,9 @@ class Indexer:
     def __init__(self, corpus, **kwargs):
         self.corpus = corpus
         self.config = kwargs
+
         self.tokenizer = Tokenizer()
-        self.storage_handler = StorageHandler()
+        self.storage_handler = StorageHandler(corpus, **kwargs)
         pass
 
     def index(self):
