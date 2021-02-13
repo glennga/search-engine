@@ -366,7 +366,7 @@ class Indexer:
                 tokens = self.tokenizer.tokenize(file)
                 for token in tokens:
                     #print(f"{token.token}: {token.docID}, {token.frequency}, {token.tags}")
-                    #self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
+                    self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
                 # Break for now as a test
                 #return
 
