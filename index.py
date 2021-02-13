@@ -67,7 +67,11 @@ class Tokenizer:
                     # Get each word in the tag
                     for word in re.split(r"[^a-zA-Z0-9]+", element.text):
                         # Porter stemming (as suggested)
-                        word = self.porter.stem(word)
+                        word = self.porter.stem(word.lower())
+                        # Does the word even have content
+                        if len(word) <= 0:
+                            # log that it is blank"
+                            continue
                         # Is the word not in the tokens list
                         if word not in tokens:
                             tokens[word] = self.Token(word, docID, 1, [element.tag])
@@ -360,6 +364,7 @@ class Indexer:
                 print(file.name)
                 tokens = self.tokenizer.tokenize(file)
                 for token in tokens:
+                    #print(f"{token.token}: {token.docID}, {token.frequency}, {token.tags}")
                     self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
                 # Break for now as a test
                 #return
