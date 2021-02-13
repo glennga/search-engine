@@ -87,6 +87,40 @@ class Tokenizer:
         return tokens
 
 
+class IndexDescriptor:
+    """ Descriptor for a given index file. Holds a skip list to give positions to "skip" to in the index file. """
+    class _Node:
+        def __init__(self, token, tell):
+            self.token = token
+            self.tell = tell
+            self.sibling = None
+            self.child = None
+
+        def set_sibling(self, sibling):
+            self.sibling = sibling
+
+        def set_child(self, child):
+            self.child = child
+
+        def move_right(self):
+            return self.sibling
+
+        def move_down(self):
+            return self.child
+
+    def __init__(self, l1_token_tells, **kwargs):
+        self.skip_probability = kwargs['storage']['skipProbability']
+        self.time_built = str(datetime.datetime.now().isoformat())
+        self.index_name = kwargs['indexFile']
+        self.corpus = kwargs['corpus']
+        self.sentinel = self._Node(0, 0)
+        # self.sentinel = self._build(l1_token_tells)
+
+    def get_metadata(self):
+        """ Return everything about the index (except the skip list itself). """
+        return {'indexFile': self.index_name, 'timeBuilt': self.time_built, 'corpus': self.corpus}
+
+
 class StorageHandler:
     """ Class to manage the storage of our inverted index.
 
@@ -103,20 +137,20 @@ class StorageHandler:
     c) The resulting inverted index consists of a data file and an descriptor file. The former acts as the inverted
        file, while the latter gives metadata + a search tree for the data file itself.
     d) A single inverted list MUST be able to fit into memory, but <token, inverted list> pairs can extend out of
-       memory. TODO: See if this is a valid assumption...
+       memory. TODO: See if we can lax this constraint later.
 
     """
     def __init__(self, corpus, **kwargs):
         self.merge_queue = deque()
         self.memory_component = dict()
         self.config = kwargs
-        self.corpus = corpus
+        self.config['corpus'] = corpus
 
     def write(self, token, entry):
         """ Store an index entry with respect to a single document.
 
         To account for large lists in memory, we use a SortedList structure which performs insertions in approximately
-        O(log(n)) time.
+        O(log(n)) time. If the in-memory component is larger than our spill threshold, we spill to disk.
 
         :param token: The token to associate with the given entry.
         :param entry: The document descriptor, consisting of the following: [docID, frequency, <tuple of tags>]
@@ -125,7 +159,6 @@ class StorageHandler:
             self.memory_component[token] = SortedList(key=lambda ell: ell[0])
         self.memory_component[token].add(entry)
 
-        # Trigger a spill action.
         if sys.getsizeof(self.memory_component) > self.config['storage']['spillThreshold']:
             self._spill()
 
@@ -157,8 +190,8 @@ class StorageHandler:
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
                     left_component = sorted(self.memory_component.items(), key=lambda token: token[0])
-                    right_component = self._deserialize_generator(right_fp)
-                    l1_tokens = self._merge(left_component, right_component, out_fp)
+                    right_component = self._generator(right_fp)
+                    l1_token_tells = self._merge(left_component, right_component, out_fp)
                     self.memory_component.clear()
 
             else:
@@ -166,24 +199,21 @@ class StorageHandler:
                      open(self.merge_queue.popleft(), 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
-                    left_component = self._deserialize_generator(left_fp)
-                    right_component = self._deserialize_generator(right_fp)
-                    l1_tokens = self._merge(left_component, right_component, out_fp)
+                    left_component = self._generator(left_fp)
+                    right_component = self._generator(right_fp)
+                    l1_token_tells = self._merge(left_component, right_component, out_fp)
 
             self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + run_file)
 
         data_file = str(datetime.datetime.now().isoformat()) + '.idx'
         os.rename(self.merge_queue.popleft(), self.config['storage']['dataDirectory'] + '/' + data_file)
         logger.info(f'Merge has finished. Index {data_file} has been built.')
+        self.config['indexFile'] = data_file
 
         descriptor_file = re.search(r'(.*).idx', data_file).group(1) + '.desc'
         with open(self.config['storage']['dataDirectory'] + '/' + descriptor_file, 'wb') as descriptor_fp:
             logger.info(f'Writing descriptor file {descriptor_file}.')
-            pickle.dump({
-                'location': self.corpus,
-                'builtOn': datetime.datetime.now(),
-                'skipList': self._build_skip(l1_tokens)
-            }, descriptor_fp)
+            pickle.dump(IndexDescriptor(l1_token_tells, **self.config), descriptor_fp)
 
         return data_file, descriptor_file
 
@@ -195,17 +225,17 @@ class StorageHandler:
            serialize each pair.
         3. Randomly sample tokens to build the L1 layer of a skip list (only applicable if this is the last spill).
 
-        :return A randomly sampled ordered list of tokens.
+        :return A randomly sampled ordered list of <tokens, byte location> pairs.
         """
         spill_file = 'd0_' + str(datetime.datetime.now().isoformat()) + '.comp'
         logger.info(f'Spilling component {spill_file} to disk.')
-        l1_token_list = list()
+        l1_token_tells = list()
 
         with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as spill_fp:
             ordered_memory_component = sorted(self.memory_component.items(), key=lambda token: token[0])
             for disk_entry in ordered_memory_component:
                 if random.random() < self.config['storage']['skipProbability']:
-                    l1_token_list.append((disk_entry[0], spill_fp.tell(), ))
+                    l1_token_tells.append((disk_entry[0], spill_fp.tell(), ))
 
                 native_entry = (disk_entry[0], list(disk_entry[1]))
                 logger.debug(f'Writing entry {native_entry} to disk.')
@@ -213,7 +243,7 @@ class StorageHandler:
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
-        return l1_token_list
+        return l1_token_tells
 
     def _merge(self, left_component, right_component, out_fp):
         """ Merge the two components together in a "merge-join" fashion, writing to the given file pointer.
@@ -235,18 +265,18 @@ class StorageHandler:
 
         :param left_component: Iterator that produces sorted <token, inverted list> pairs.
         :param right_component: Iterator that produces sorted <token, inverted list> pairs.
-        :return A randomly sampled ordered list of tokens.
+        :return A randomly sampled ordered list of <tokens, byte location> pairs.
         """
         def _advance(component):
             try:
-                token_pair = next(component)
+                token = next(component)
                 is_exhausted = False
             except StopIteration:
-                token_pair = None
+                token = None
                 is_exhausted = True
-            return token_pair, is_exhausted
+            return token, is_exhausted
 
-        l1_token_list = list()
+        l1_token_tells = list()
         left_token_pair, is_left_exhausted = _advance(left_component)
         right_token_pair, is_right_exhausted = _advance(right_component)
 
@@ -278,46 +308,15 @@ class StorageHandler:
 
             if random.random() < self.config['storage']['skipProbability']:
                 logger.debug(f'Adding {(out_entry[0], out_fp.tell(), )} to L1 layer of skip list.')
-                l1_token_list.append((out_entry[0], out_fp.tell(), ))
+                l1_token_tells.append((out_entry[0], out_fp.tell(), ))
 
             logger.debug(f'Writing entry {out_entry} to disk.')
             pickle.dump(out_entry, out_fp)
 
-        return l1_token_list
-
-    def _build_skip(self, l1_tokens) -> deque:
-        """ Build a skip list given an ordered list of L1 tokens.
-
-        1. Similar to how got our L1 tokens, we randomly determine what tokens "survive" to L2, L3, and so on...
-        2. The assumption is that this entire structure will fit into memory, so we can be lax with our representation.
-           The entire skip list is represented as a stack, with the L1 tokens at the bottom and the uppermost layer
-           on top.
-
-        :param l1_tokens: Randomly sampled tokens to represent the L1 layer.
-        :return: A stack representing the skip list (L1 = the bottom of the stack, top of stack = uppermost layer).
-        """
-        skip_list = deque()
-        skip_list.append(l1_tokens)
-
-        surviving_tokens = list(l1_tokens)
-        current_level = 0
-        while len(surviving_tokens) != 0:
-            current_level = current_level + 1
-            li_tokens = list()
-
-            for token in surviving_tokens:
-                if random.random() < self.config['storage']['skipProbability']:
-                    logger.debug(f'Adding {token} to L{current_level} layer of skip list.')
-                    li_tokens.append(token)
-                else:
-                    logger.debug(f'{token} did not survive. Removing from survive list.')
-                    surviving_tokens.remove(token)
-
-        logger.info(f'Returning skip list: {skip_list}')
-        return skip_list
+        return l1_token_tells
 
     @staticmethod
-    def _deserialize_generator(in_fp):
+    def _generator(in_fp):
         """ Deserialize the given ordered disk component to the an ordered list of <token, inverted list> pairs.
 
         To avoid having to load the entire disk component into memory, we return a generator of <token, inverted list>
