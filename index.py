@@ -93,12 +93,19 @@ class Tokenizer:
 
 class IndexDescriptor:
     """ Descriptor for a given index file. Holds a skip list to give positions to "skip" to in the index file. """
+    END_TOKEN = '$'
+    START_TOKEN = '^'
+
     class _Node:
-        def __init__(self, token, tell):
+        def __init__(self, token, tell, level):
             self.token = token
             self.tell = tell
+            self.level = level
             self.sibling = None
             self.child = None
+
+        def __str__(self):
+            return f'<{self.token}, {self.tell}> @ {self.level}'
 
         def set_sibling(self, sibling):
             self.sibling = sibling
@@ -106,23 +113,109 @@ class IndexDescriptor:
         def set_child(self, child):
             self.child = child
 
-        def move_right(self):
+        def look_right(self):
             return self.sibling
 
-        def move_down(self):
+        def look_down(self):
             return self.child
 
     def __init__(self, l1_token_tells, **kwargs):
         self.skip_probability = kwargs['storage']['skipProbability']
-        self.time_built = str(datetime.datetime.now().isoformat())
+        self.l1_probability = kwargs['storage']['l1Probability']
+        self.max_skip_height = kwargs['storage']['maxSkipHeight']
         self.index_name = kwargs['indexFile']
         self.corpus = kwargs['corpus']
-        self.sentinel = self._Node(0, 0)
-        # self.sentinel = self._build(l1_token_tells)
+
+        self.time_built = str(datetime.datetime.now().isoformat())
+        self.sentinel = self._build(l1_token_tells)
+
+    def __getitem__(self, item):
+        """ Given a token, search our skip list and return the tell associated with the closest node.
+
+        1) We start from the top node of our sentinel.
+        2) Drop down and move right until we reach a tail node OR that node's token is greater than our query item.
+        3) Return the lowest and closest token's tell.
+
+        :param item: Token to search for.
+        :return The tell associated with smallest closest token in our list.
+        """
+        current_node = self.sentinel
+        while current_node.look_down() is not None:
+            current_node = current_node.look_down()
+            while current_node.look_right().token != self.END_TOKEN and current_node.look_right().token < item:
+                current_node = current_node.look_right()
+
+        return current_node.tell
 
     def get_metadata(self):
         """ Return everything about the index (except the skip list itself). """
-        return {'indexFile': self.index_name, 'timeBuilt': self.time_built, 'corpus': self.corpus}
+        return {
+            'indexFile': self.index_name,
+            'timeBuilt': self.time_built,
+            'corpus': self.corpus,
+            'skipListMeta': {
+                'skipProbability': self.skip_probability,
+                'l1Probability': self.l1_probability,
+                'maxSkipHeight': self.max_skip_height
+            }
+        }
+
+    @staticmethod
+    def _link_nodes(node_list):
+        """ Construct a SLL given an ordered list of nodes. We return the first node in this sequence. """
+        current_node = node_list[0]
+        for node in node_list[1:]:
+            current_node.set_sibling(node)
+            current_node = node
+
+        return node_list[0]
+
+    def _build(self, l1_token_tells):
+        """ Build our skip list.
+
+        1) Build the L1 layer. This will consist of all of the tokens supplied to us by the caller.
+        2) Build the next layer. This involves a) building the next sentinel node, b) iterating to the end of the
+           previous sentinel node's siblings and c) determining whether a node survives or not (by skipProbability).
+           We ensure a node's survival by creating a parent of the current node and linking it with the next
+           sentinel node.
+        3) Repeat this for maxSkipHeight times. We do not include layers that have no content nodes or whose content
+           has not changed with the previous layer.
+
+        :param l1_token_tells: <token, byte location> pairs that represent the L1 layer of the skip list.
+        :return A list of nodes, representing the starting nodes for each layer.
+        """
+        l1_sentinel = self._link_nodes([self._Node(self.START_TOKEN, None, 1)] +
+            [self._Node(t[0], t[1], 1) for t in l1_token_tells] + [self._Node(self.END_TOKEN, None, 1)])
+
+        current_node = l1_sentinel
+        current_height = 1
+        current_length = len(l1_token_tells) + 2
+        for level in range(1, self.max_skip_height):
+            level_sentinel = self._Node(self.START_TOKEN, None, current_height + 1)
+            level_sentinel.set_child(current_node)
+            level_nodes = [level_sentinel]
+
+            while current_node.look_right() is not None:
+                if current_node.token != self.START_TOKEN and random.random() < self.skip_probability:
+                    new_node = self._Node(current_node.token, current_node.tell, current_height + 1)
+                    new_node.set_child(current_node)
+                    level_nodes.append(new_node)
+                current_node = current_node.look_right()
+            current_tail = current_node
+
+            if (len(level_nodes) == 1 and current_length == 3) or level == self.max_skip_height - 1:
+                level_tail = self._Node(self.END_TOKEN, None, current_height + 1)
+                level_tail.set_child(current_tail)
+                current_node = self._link_nodes([level_sentinel, level_tail])
+                return current_node
+            elif 2 <= len(level_nodes) < current_length - 1:
+                level_tail = self._Node(self.END_TOKEN, None, current_height + 1)
+                level_tail.set_child(current_tail)
+                current_node = self._link_nodes(level_nodes + [level_tail])
+                current_height = current_height + 1
+                current_length = len(level_nodes) + 1
+            else:
+                current_node = level_sentinel.look_down()
 
 
 class StorageHandler:
@@ -139,8 +232,12 @@ class StorageHandler:
        having immutable components.
     b) The merging process happens "all-at-once" once "close" is called (rather than a "rolling merge" approach).
     c) The resulting inverted index consists of a data file and an descriptor file. The former acts as the inverted
-       file, while the latter gives metadata + a search tree for the data file itself.
-    d) A single inverted list MUST be able to fit into memory, but <token, inverted list> pairs can extend out of
+       file, while the latter gives metadata + a skip list for the data file itself.
+    d) To "index" the index, we use a skip-list instead of building a more balanced tree. This is because building a
+       tree requires another pass of our entire index (or some more complex bookkeeping of our index while we build
+       it)- but building a skip list can be done after the merge process simply and efficiently by just sampling while
+       we build the index.
+    e) A single inverted list MUST be able to fit into memory, but <token, inverted list> pairs can extend out of
        memory. TODO: See if we can lax this constraint later.
 
     """
@@ -238,7 +335,7 @@ class StorageHandler:
         with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as spill_fp:
             ordered_memory_component = sorted(self.memory_component.items(), key=lambda token: token[0])
             for disk_entry in ordered_memory_component:
-                if random.random() < self.config['storage']['skipProbability']:
+                if random.random() < self.config['storage']['l1Probability']:
                     l1_token_tells.append((disk_entry[0], spill_fp.tell(), ))
 
                 native_entry = (disk_entry[0], list(disk_entry[1]))
@@ -310,7 +407,7 @@ class StorageHandler:
             else:  # is_left_exhausted and is_right_exhausted
                 break
 
-            if random.random() < self.config['storage']['skipProbability']:
+            if random.random() < self.config['storage']['l1Probability']:
                 logger.debug(f'Adding {(out_entry[0], out_fp.tell(), )} to L1 layer of skip list.')
                 l1_token_tells.append((out_entry[0], out_fp.tell(), ))
 
