@@ -279,7 +279,7 @@ class StorageHandler:
         """
         if len(self.merge_queue) == 0:
             logger.info('No disk components found. Writing in-memory component to disk.')
-            self._spill()
+            l1_token_tells = self._spill()
 
         while len(self.merge_queue) > 1:
             merge_level = min(int(re.search(r'.*/d([0-9]).*', f).group(1)) for f in self.merge_queue) + 1
