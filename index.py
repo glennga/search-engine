@@ -86,7 +86,7 @@ class Tokenizer:
                         meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
                     self.logger.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} "
-                                      f"in docID starting with {docID[:6]}: {e.message}. Skipping this metadata entry.")
+                                      f"in docID starting with {docID[:6]}: {e}. Skipping this metadata entry.")
             self.logger.info(f"Found metadata for docID starting with "
                              f"{docID[:6]}: {[content.text for content in meta_names_content]}")
 
@@ -332,7 +332,8 @@ class StorageHandler:
                 with open(self.merge_queue.popleft(), 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
-                    left_component = sorted(self.memory_component.items(), key=lambda token: token[0])
+                    native_memory_component = [(t, list(i)) for t, i in self.memory_component.items()]
+                    left_component = iter(sorted(native_memory_component, key=lambda t: t[0]))
                     right_component = self._generator(right_fp)
                     l1_token_tells = self._merge(left_component, right_component, out_fp)
                     self.memory_component.clear()
