@@ -17,6 +17,7 @@ from sortedcontainers import SortedList
 from nltk.stem import PorterStemmer
 
 logger = __init__.get_logger('Index')
+logger_tokenizer = __init__.get_logger('Tokenizer')
 
 
 class Tokenizer:
@@ -42,7 +43,6 @@ class Tokenizer:
 
     def tokenize(self, file):
         # Set up variables and get doc ID from file name.
-        print(file.name.rstrip(".json"))
         docID = file.name.rstrip(".json")
         tokens = {} # use dict for easy lookup, then convert to list before returning
         url = ""
@@ -50,11 +50,13 @@ class Tokenizer:
         encoding = ""
 
         # Populate the initialized variables from JSON
+        logger_tokenizer.info(f"Now opening file: {docID}.json")
         with file.open() as f:
             data = json.loads(f.read())
             url = data["url"]
             encoding = data["encoding"]
             content = data["content"].encode(encoding=encoding)
+        logger_tokenizer.info(f"DocID starting with {docID[:6]} contains URL {url} with encoding {encoding}.")
 
         # TODO: Tokenize content
         try:
@@ -82,12 +84,13 @@ class Tokenizer:
                             if element.tag not in token.tags:
                                 token.tags.append(element.tag)
                 except UnicodeDecodeError as e:
-                    print(e)
+                    logger_tokenizer.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID starting with {docID[:6]}.")
         except etree.ParserError as e:
-            print(e)
+            logger_tokenizer.error(f"Tokenizer: etree.ParserError: {e.message}. Aborting scanning docID starting with {docID[:6]}.")
             return list()
 
         tokens = list(tokens.values())
+        logger_tokenizer.info(f"Tokens in URL {url}, docID starting with {docID[:6]}: {tokens}")
         return tokens
 
 
@@ -451,20 +454,24 @@ class Indexer:
 
     def index(self):
         corpus_path = Path(self.corpus)
+        logger.info(f"Corpus Path: {corpus_path}")
         for subdomain_directory in corpus_path.iterdir():
             if not subdomain_directory.is_dir():
                 continue
-            print(subdomain_directory)
+            logger.info(f"Reading files in the subdomain directory {subdomain_directory}.")
             for file in subdomain_directory.iterdir():
                 if not file.is_file():
                     continue
-                print(file.name)
+                logger.info(f"Reading file {file.name} (tokenizing info in Tokenizer log)")
                 tokens = self.tokenizer.tokenize(file)
+                logger.info(f"Tokenizing complete, ready to feed tokens.")
                 for token in tokens:
-                    #print(f"{token.token}: {token.docID}, {token.frequency}, {token.tags}")
+                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, {token.frequency}, {token.tags}")
                     self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
                 # Break for now as a test
-                #return
+                #break
+        # Close the storage handler
+        self.storage_handler.close()
 
 
 if __name__ == '__main__':
