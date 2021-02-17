@@ -78,7 +78,12 @@ class Tokenizer:
                 # TODO: if the metadata name matches a criteria, add it to the list.
                 try:
                     if attribute["name"] in ["title", "description", "author", "keywords"]:
-                        meta_names_content.append(self.MetaDataToken(str(attribute["content"])))
+                        content = ""
+                        if attribute.has_key["content"]:
+                            content += str(attribute["content"]) + " "
+                        if attribute.has_key["value"]:
+                            content += str(attribute["value"]) + " "
+                        meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
                     self.logger.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} "
                                       f"in docID starting with {docID[:6]}: {e.message}. Skipping this metadata entry.")
@@ -89,13 +94,14 @@ class Tokenizer:
             for tag_objects in [meta_names_content, root.iter()]:
                 for element in tag_objects:
                     try:
-                        # Is it a comment?
-                        # print(type(element.tag))
-                        # TODO: what is the way to compare cython object types? Are we forced to load the cython module?
+                        # Is it a comment? Skip.
                         if element.tag is etree.Comment:
                             continue
-                        # Is the text empty?
-                        elif element.text is None:
+                        # Is the tag a script or style? Skip.
+                        if element.tag in ["style", "script"]:
+                            continue
+                        # Is the text empty? Skip.
+                        if element.text is None:
                             continue
                         # Get each word in the tag.
                         for word in re.split(r"[^a-zA-Z0-9]+", element.text):
