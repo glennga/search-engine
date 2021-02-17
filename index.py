@@ -21,13 +21,13 @@ logger = __init__.get_logger('Index')
 class Tokenizer:
     class Token:
         token = "example"
-        docID = "0"
+        doc_id = "0"
         frequency = 0
         tags = []
 
-        def __init__(self, token, docID, frequency, tags):
+        def __init__(self, token, doc_id, frequency, tags):
             self.token = token
-            self.docID = docID
+            self.doc_id = doc_id
             self.frequency = frequency
             self.tags = tags
 
@@ -52,9 +52,9 @@ class Tokenizer:
         # Set up variables and get doc ID from file name.
         docID = file.name.rstrip(".json")
         tokens = {}  # Use dict for easy lookup, then convert to list before returning.
-        url = ""
-        data = {}
-        encoding = ""
+        # url = ""
+        # data = {}
+        # encoding = ""
 
         # Populate the initialized variables from JSON.
         self.logger.info(f"Now opening file: {docID}.json")
@@ -227,7 +227,8 @@ class IndexDescriptor:
         :return A list of nodes, representing the starting nodes for each layer.
         """
         l1_sentinel = self._link_nodes([self._Node(self.START_TOKEN, None, 1)] +
-            [self._Node(t[0], t[1], 1) for t in l1_token_tells] + [self._Node(self.END_TOKEN, None, 1)])
+                                       [self._Node(t[0], t[1], 1) for t in l1_token_tells] +
+                                       [self._Node(self.END_TOKEN, None, 1)])
 
         current_node = l1_sentinel
         current_height = 1
@@ -505,9 +506,9 @@ class Indexer:
                 tokens = self.tokenizer.tokenize(file)
                 logger.info(f"Tokenizing complete, ready to feed tokens.")
                 for token in tokens:
-                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, "
+                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.doc_id}, "
                                  f"{token.frequency}, {token.tags}")
-                    self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
+                    self.storage_handler.write(token.token, [token.doc_id, token.frequency, token.tags])
 
                 # Break for now as a test.
                 # self.storage_handler.close()
