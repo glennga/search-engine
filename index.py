@@ -503,8 +503,8 @@ class Indexer:
                     logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, {token.frequency}, {token.tags}")
                     self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
                 # Break for now as a test
-                self.storage_handler.close()
-                return
+                #self.storage_handler.close()
+                #return
         # Close the storage handler
         self.storage_handler.close()
 
