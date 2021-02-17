@@ -13,16 +13,12 @@ from lxml import etree, html
 from pathlib import Path
 from collections import deque
 from sortedcontainers import SortedList
-
 from nltk.stem import PorterStemmer
 
 logger = __init__.get_logger('Index')
-logger_tokenizer = __init__.get_logger('Tokenizer')
 
 
 class Tokenizer:
-    porter = PorterStemmer()
-
     class Token:
         token = "example"
         docID = "0"
@@ -49,32 +45,32 @@ class Tokenizer:
             return self.text
 
     def __init__(self):
-        pass
-
+        self.porter = PorterStemmer()
+        self.logger = __init__.get_logger('Tokenizer')
 
     def tokenize(self, file):
         # Set up variables and get doc ID from file name.
         docID = file.name.rstrip(".json")
-        tokens = {} # use dict for easy lookup, then convert to list before returning
+        tokens = {}  # Use dict for easy lookup, then convert to list before returning.
         url = ""
         data = {}
         encoding = ""
 
-        # Populate the initialized variables from JSON
-        logger_tokenizer.info(f"Now opening file: {docID}.json")
+        # Populate the initialized variables from JSON.
+        self.logger.info(f"Now opening file: {docID}.json")
         with file.open() as f:
             data = json.loads(f.read())
             url = data["url"]
             encoding = data["encoding"]
             content = data["content"].encode(encoding=encoding)
-        logger_tokenizer.info(f"DocID starting with {docID[:6]} contains URL {url} with encoding {encoding}.")
+        self.logger.info(f"DocID starting with {docID[:6]} contains URL {url} with encoding {encoding}.")
 
         # TODO: Tokenize content
         try:
             # Get the XML content from the string.
             root = html.fromstring(content)
 
-            # Get metadata and prepare the relevant tokens
+            # Get metadata and prepare the relevant tokens.
             meta_names = root.xpath("//meta[@name]")
             meta_names_content = []
             for meta_name in meta_names:
@@ -84,8 +80,10 @@ class Tokenizer:
                     if attribute["name"] in ["title", "description", "author", "keywords"]:
                         meta_names_content.append(self.MetaDataToken(str(attribute["content"])))
                 except Exception as e:
-                    logger_tokenizer.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} in docID starting with {docID[:6]}: {e.message}. Skipping this metadata entry.")
-            logger_tokenizer.info(f"Found metadata for docID starting with {docID[:6]}: {[content.text for content in meta_names_content]}")
+                    self.logger.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} "
+                                      f"in docID starting with {docID[:6]}: {e.message}. Skipping this metadata entry.")
+            self.logger.info(f"Found metadata for docID starting with "
+                             f"{docID[:6]}: {[content.text for content in meta_names_content]}")
 
             # Process the metadata tokens and XML contents.
             for tag_objects in [meta_names_content, root.iter()]:
@@ -93,38 +91,39 @@ class Tokenizer:
                     try:
                         # Is it a comment?
                         # print(type(element.tag))
-                        # TODO: what is the way to compare cython object types? Are we
-                        # TODO: forced to load the cython module?
+                        # TODO: what is the way to compare cython object types? Are we forced to load the cython module?
                         if element.tag is etree.Comment:
                             continue
                         # Is the text empty?
                         elif element.text is None:
                             continue
-                        # Get each word in the tag
+                        # Get each word in the tag.
                         for word in re.split(r"[^a-zA-Z0-9]+", element.text):
                             # Porter stemming (as suggested)
                             word = self.porter.stem(word.lower())
-                            # Does the word even have content
+                            # Does the word even have content?
                             if len(word) <= 0:
-                                # log that it is blank"
+                                # Log that it is blank".
                                 continue
-                            # Is the word not in the tokens list
+                            # Is the word not in the tokens list?
                             if word not in tokens:
                                 tokens[word] = self.Token(word, docID, 1, [element.tag])
-                            # The word is in the tokens list
+                            # The word is in the tokens list.
                             else:
                                 token = tokens[word]
                                 token.frequency += 1
                                 if element.tag not in token.tags:
                                     token.tags.append(element.tag)
                     except UnicodeDecodeError as e:
-                        logger_tokenizer.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID starting with {docID[:6]}.")
+                        self.logger.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID "
+                                          f"starting with {docID[:6]}.")
         except etree.ParserError as e:
-            logger_tokenizer.error(f"Tokenizer: etree.ParserError: {e.message}. Aborting scanning docID starting with {docID[:6]}.")
+            self.logger.error(f"Tokenizer: etree.ParserError: {e.message}. Aborting scanning docID starting "
+                              f"with {docID[:6]}.")
             return list()
 
         tokens = list(tokens.values())
-        logger_tokenizer.debug(f"Tokens in URL {url}, docID starting with {docID[:6]}: {[token.token for token in tokens]}")
+        self.logger.debug(f"Tokens in URL {url}, docID starting with {docID[:6]}: {[token.token for token in tokens]}")
         return tokens
 
 
@@ -484,7 +483,6 @@ class Indexer:
 
         self.tokenizer = Tokenizer()
         self.storage_handler = StorageHandler(corpus, **kwargs)
-        pass
 
     def index(self):
         corpus_path = Path(self.corpus)
@@ -500,12 +498,15 @@ class Indexer:
                 tokens = self.tokenizer.tokenize(file)
                 logger.info(f"Tokenizing complete, ready to feed tokens.")
                 for token in tokens:
-                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, {token.frequency}, {token.tags}")
+                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, "
+                                 f"{token.frequency}, {token.tags}")
                     self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
-                # Break for now as a test
-                #self.storage_handler.close()
-                #return
-        # Close the storage handler
+
+                # Break for now as a test.
+                # self.storage_handler.close()
+                # return
+
+        # Close the storage handler.
         self.storage_handler.close()
 
 
