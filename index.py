@@ -115,10 +115,10 @@ class Tokenizer:
                                 if element.tag not in token.tags:
                                     token.tags.append(element.tag)
                     except UnicodeDecodeError as e:
-                        self.logger.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID "
+                        self.logger.error(f"Tokenizer: UnicodeDecodeError: {e}. Skipping element in docID "
                                           f"starting with {docID[:6]}.")
         except etree.ParserError as e:
-            self.logger.error(f"Tokenizer: etree.ParserError: {e.message}. Aborting scanning docID starting "
+            self.logger.error(f"Tokenizer: etree.ParserError: {e}. Aborting scanning docID starting "
                               f"with {docID[:6]}.")
             return list()
 
