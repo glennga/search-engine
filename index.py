@@ -38,8 +38,19 @@ class Tokenizer:
         def __str__(self):
             return self.token
 
+    class MetaDataToken:
+        text = ""
+        tag = "meta"
+
+        def __init__(self, string):
+            self.text = string
+
+        def __str__(self):
+            return self.text
+
     def __init__(self):
         pass
+
 
     def tokenize(self, file):
         # Set up variables and get doc ID from file name.
@@ -60,37 +71,60 @@ class Tokenizer:
 
         # TODO: Tokenize content
         try:
+            # Get the XML content from the string.
             root = html.fromstring(content)
-            for element in root.iter():
+
+            # Get metadata and prepare the relevant tokens
+            meta_names = root.xpath("//meta[@name]")
+            meta_names_content = []
+            for meta_name in meta_names:
+                attribute = meta_name.attrib
+                # TODO: if the metadata name matches a criteria, add it to the list.
                 try:
-                    # TODO: do we need to get tokens from the metadata?
-                    if element.text is None:
-                        continue
-                    # Get each word in the tag
-                    for word in re.split(r"[^a-zA-Z0-9]+", element.text):
-                        # Porter stemming (as suggested)
-                        word = self.porter.stem(word.lower())
-                        # Does the word even have content
-                        if len(word) <= 0:
-                            # log that it is blank"
+                    if attribute["name"] in ["title", "description", "author", "keywords"]:
+                        meta_names_content.append(self.MetaDataToken(str(attribute["content"])))
+                except Exception as e:
+                    logger_tokenizer.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} in docID starting with {docID[:6]}: {e.message}. Skipping this metadata entry.")
+            logger_tokenizer.info(f"Found metadata for docID starting with {docID[:6]}: {[content.text for content in meta_names_content]}")
+
+            # Process the metadata tokens and XML contents.
+            for tag_objects in [meta_names_content, root.iter()]:
+                for element in tag_objects:
+                    try:
+                        # Is it a comment?
+                        # print(type(element.tag))
+                        # TODO: what is the way to compare cython object types? Are we
+                        # TODO: forced to load the cython module?
+                        if str(type(element.tag)) == "<class 'cython_function_or_method'>":
                             continue
-                        # Is the word not in the tokens list
-                        if word not in tokens:
-                            tokens[word] = self.Token(word, docID, 1, [element.tag])
-                        # The word is in the tokens list
-                        else:
-                            token = tokens[word]
-                            token.frequency += 1
-                            if element.tag not in token.tags:
-                                token.tags.append(element.tag)
-                except UnicodeDecodeError as e:
-                    logger_tokenizer.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID starting with {docID[:6]}.")
+                        # Is the text empty?
+                        elif element.text is None:
+                            continue
+                        # Get each word in the tag
+                        for word in re.split(r"[^a-zA-Z0-9]+", element.text):
+                            # Porter stemming (as suggested)
+                            word = self.porter.stem(word.lower())
+                            # Does the word even have content
+                            if len(word) <= 0:
+                                # log that it is blank"
+                                continue
+                            # Is the word not in the tokens list
+                            if word not in tokens:
+                                tokens[word] = self.Token(word, docID, 1, [element.tag])
+                            # The word is in the tokens list
+                            else:
+                                token = tokens[word]
+                                token.frequency += 1
+                                if element.tag not in token.tags:
+                                    token.tags.append(element.tag)
+                    except UnicodeDecodeError as e:
+                        logger_tokenizer.error(f"Tokenizer: UnicodeDecodeError: {e.message}. Skipping element in docID starting with {docID[:6]}.")
         except etree.ParserError as e:
             logger_tokenizer.error(f"Tokenizer: etree.ParserError: {e.message}. Aborting scanning docID starting with {docID[:6]}.")
             return list()
 
         tokens = list(tokens.values())
-        logger_tokenizer.info(f"Tokens in URL {url}, docID starting with {docID[:6]}: {tokens}")
+        logger_tokenizer.debug(f"Tokens in URL {url}, docID starting with {docID[:6]}: {[token.token for token in tokens]}")
         return tokens
 
 
@@ -469,7 +503,8 @@ class Indexer:
                     logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.docID}, {token.frequency}, {token.tags}")
                     self.storage_handler.write(token.token, [token.docID, token.frequency, token.tags])
                 # Break for now as a test
-                #break
+                self.storage_handler.close()
+                return
         # Close the storage handler
         self.storage_handler.close()
 
