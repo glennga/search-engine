@@ -95,7 +95,7 @@ class Tokenizer:
                         # print(type(element.tag))
                         # TODO: what is the way to compare cython object types? Are we
                         # TODO: forced to load the cython module?
-                        if str(type(element.tag)) == "<class 'cython_function_or_method'>":
+                        if element.tag is etree.Comment:
                             continue
                         # Is the text empty?
                         elif element.text is None:
