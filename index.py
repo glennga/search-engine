@@ -490,25 +490,25 @@ class Indexer:
         self.config = kwargs
 
         self.tokenizer = Tokenizer()
-        self.storage_handler = StorageHandler(corpus, **kwargs)
+        self.corpus_path = Path(self.corpus)
+        self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), **kwargs)
 
     def index(self):
-        corpus_path = Path(self.corpus)
-        logger.info(f"Corpus Path: {corpus_path}")
-        for subdomain_directory in corpus_path.iterdir():
+        logger.info(f"Corpus Path: {self.corpus_path.absolute()}")
+        for subdomain_directory in self.corpus_path.iterdir():
             if not subdomain_directory.is_dir():
                 continue
             logger.info(f"Reading files in the subdomain directory {subdomain_directory}.")
             for file in subdomain_directory.iterdir():
                 if not file.is_file():
                     continue
-                logger.info(f"Reading file {file.name} (tokenizing info in Tokenizer log)")
+                logger.info(f"Reading file {file.name} (tokenizing info in Tokenizer log).")
                 tokens = self.tokenizer.tokenize(file)
                 logger.info(f"Tokenizing complete, ready to feed tokens.")
                 for token in tokens:
-                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {token.doc_id}, "
-                                 f"{token.frequency}, {token.tags}")
-                    self.storage_handler.write(token.token, [token.doc_id, token.frequency, token.tags])
+                    entry = (token.doc_id, token.frequency, token.tags, '/'.join(file.parts[1:]), )
+                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {entry}")
+                    self.storage_handler.write(token.token, entry)
 
                 # Break for now as a test.
                 # self.storage_handler.close()
