@@ -1,5 +1,6 @@
 import argparse
 import pickle
+import zlib
 
 # Required for pickle!
 from index import IndexDescriptor
@@ -39,7 +40,7 @@ def _search(in_fp, in_desc, word):
     search_generator = _generator(in_fp)
     for data_entry in search_generator:
         if data_entry[0] == word:
-            return data_entry
+            return {data_entry[0]: [pickle.loads(zlib.decompress(e)) for e in data_entry[1]]}
 
         elif data_entry[0] > word:
             print('Word does not exist!')
@@ -60,7 +61,7 @@ if __name__ == '__main__':
         if command_line_args.word is None:
             generator = _generator(index_fp)
             for entry in generator:
-                print(entry)
+                print({entry[0]: [pickle.loads(zlib.decompress(e)) for e in entry[1]]})
         else:
             descriptor = next(_generator(desc_fp))
             print(_search(index_fp, descriptor, command_line_args.word))

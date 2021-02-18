@@ -8,6 +8,7 @@ import os
 import re
 import heapq
 import random
+import zlib
 
 from lxml import etree, html
 from pathlib import Path
@@ -297,10 +298,10 @@ class StorageHandler:
         O(log(n)) time. If the in-memory component is larger than our spill threshold, we spill to disk.
 
         :param token: The token to associate with the given entry.
-        :param entry: The document descriptor, consisting of the following: [docID, frequency, <tuple of tags>]
+        :param entry: The document descriptor, which is an arbitrary sequence of bytes.
         """
         if token not in self.memory_component:
-            self.memory_component[token] = SortedList(key=lambda ell: ell[0])
+            self.memory_component[token] = SortedList()
         self.memory_component[token].add(entry)
 
         if sys.getsizeof(self.memory_component) > self.config['storage']['spillThreshold']:
@@ -494,21 +495,25 @@ class Indexer:
         self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), **kwargs)
 
     def index(self):
-        logger.info(f"Corpus Path: {self.corpus_path.absolute()}")
+        logger.info(f"Corpus Path: {self.corpus_path.absolute()}.")
         for subdomain_directory in self.corpus_path.iterdir():
             if not subdomain_directory.is_dir():
                 continue
             logger.info(f"Reading files in the subdomain directory {subdomain_directory}.")
             for file in subdomain_directory.iterdir():
+                document_path = '/'.join(file.parts[1:])
                 if not file.is_file():
                     continue
-                logger.info(f"Reading file {file.name} (tokenizing info in Tokenizer log).")
+                logger.info(f"Tokenizing file {file.name}, in path {document_path}.")
                 tokens = self.tokenizer.tokenize(file)
-                logger.info(f"Tokenizing complete, ready to feed tokens.")
+
                 for token in tokens:
-                    entry = (token.doc_id, token.frequency, token.tags, '/'.join(file.parts[1:]), )
-                    logger.debug(f"Now feeding Token to storage handler: {token.token}: {entry}")
-                    self.storage_handler.write(token.token, entry)
+                    raw_entry = (document_path, token.frequency, token.tags, )
+                    compressed_entry = zlib.compress(pickle.dumps(raw_entry))
+                    logger.debug(f"Compressing entry. Size difference of "
+                                 f"{sys.getsizeof(raw_entry) - sys.getsizeof(compressed_entry)} bytes.")
+                    logger.debug(f"Now passing token to storage handler: {token.token}: (not compressed) {raw_entry}")
+                    self.storage_handler.write(token.token, compressed_entry)
 
                 # Break for now as a test.
                 # self.storage_handler.close()
