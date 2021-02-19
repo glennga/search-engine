@@ -52,14 +52,31 @@ if __name__ == '__main__':
     command_line_args = parser.parse_args()
 
     with open(command_line_args.index, 'rb') as index_fp, open(command_line_args.desc, 'rb') as desc_fp:
+        m_before_load = time.process_time()
+        m_descriptor = next(_generator_file(desc_fp))
+        m_after_load = time.process_time()
+        print(f"Load descriptor = {1000.0 * (m_after_load - m_before_load)}ms")
+
         if command_line_args.word is None:
-            generator = _generator_file(index_fp)
-            for entry in generator:
-                print(entry)
+            m_generator = _generator_file(index_fp)
+            m_count, md_count = 0, 0
+            try:
+                while True:
+                    m_token, m_postings_count = next(m_generator)
+                    print(f'({m_token}, {m_postings_count}) : [{next(m_generator)}]')
+                    for _ in range(m_postings_count - 1):
+                        next(m_generator)
+
+                    if not m_token.isdigit():
+                        md_count += 1
+                    m_count += 1
+
+            except StopIteration:
+                print(f"Total number of tokens in index: {m_count}")
+                print(f"Total number of non-numeric tokens in index: {md_count}")
 
         else:
-            descriptor = next(_generator_file(desc_fp))
-            before_search = time.process_time()
-            print(_search(index_fp, descriptor, command_line_args.word))
-            after_search = time.process_time()
-            print(f"Search from index = {1000.0 * (after_search - before_search)}ms")
+            m_before_search = time.process_time()
+            print(_search(index_fp, m_descriptor, command_line_args.word))
+            m_after_search = time.process_time()
+            print(f"Search from index = {1000.0 * (m_after_search - m_before_search)}ms")
