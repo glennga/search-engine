@@ -72,9 +72,9 @@ class Tokenizer:
                 try:
                     if attribute["name"] in ["title", "description", "author", "keywords"]:
                         content = ""
-                        if attribute.has_key["content"]:
+                        if attribute.has_key("content"):
                             content += str(attribute["content"]) + " "
-                        if attribute.has_key["value"]:
+                        if attribute.has_key("value"):
                             content += str(attribute["value"]) + " "
                         meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
