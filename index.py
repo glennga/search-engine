@@ -21,15 +21,10 @@ logger = __init__.get_logger('Index')
 
 class Tokenizer:
     class Token:
-        token = "example"
-        doc_id = "0"
-        frequency = 0
-        tags = []
-
-        def __init__(self, token, doc_id, frequency, tags):
+        def __init__(self, token, frequency, document_pos, tags):
             self.token = token
-            self.doc_id = doc_id
             self.frequency = frequency
+            self.document_pos = document_pos
             self.tags = tags
 
         def __str__(self):
@@ -51,20 +46,20 @@ class Tokenizer:
 
     def tokenize(self, file):
         # Set up variables and get doc ID from file name.
-        docID = file.name.rstrip(".json")
+        doc_id = file.name.rstrip(".json")
         tokens = {}  # Use dict for easy lookup, then convert to list before returning.
         # url = ""
         # data = {}
         # encoding = ""
 
         # Populate the initialized variables from JSON.
-        self.logger.info(f"Now opening file: {docID}.json")
+        self.logger.info(f"Now opening file: {doc_id}.json")
         with file.open() as f:
             data = json.loads(f.read())
             url = data["url"]
             encoding = data["encoding"]
             content = data["content"].encode(encoding=encoding)
-        self.logger.info(f"DocID starting with {docID[:6]} contains URL {url} with encoding {encoding}.")
+        self.logger.info(f"DocID starting with {doc_id[:6]} contains URL {url} with encoding {encoding}.")
 
         # TODO: Tokenize content
         try:
@@ -87,11 +82,13 @@ class Tokenizer:
                         meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
                     self.logger.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} "
-                                      f"in docID starting with {docID[:6]}: {e}. Skipping this metadata entry.")
-            self.logger.info(f"Found metadata for docID starting with "
-                             f"{docID[:6]}: {[content.text for content in meta_names_content]}")
+                                      f"in docID starting with {doc_id[:6]}: {e}. Skipping this metadata entry.")
+            if len(meta_names_content) > 0:
+                self.logger.info(f"Found metadata for docID starting with "
+                                 f"{doc_id[:6]}: {[content.text for content in meta_names_content]}")
 
             # Process the metadata tokens and XML contents.
+            token_count = 0
             for tag_objects in [meta_names_content, root.iter()]:
                 for element in tag_objects:
                     try:
@@ -114,23 +111,24 @@ class Tokenizer:
                                 continue
                             # Is the word not in the tokens list?
                             if word not in tokens:
-                                tokens[word] = self.Token(word, docID, 1, [element.tag])
+                                tokens[word] = self.Token(word, 1, token_count, [element.tag])
                             # The word is in the tokens list.
                             else:
                                 token = tokens[word]
                                 token.frequency += 1
                                 if element.tag not in token.tags:
                                     token.tags.append(element.tag)
+                            token_count += 1
                     except UnicodeDecodeError as e:
                         self.logger.error(f"Tokenizer: UnicodeDecodeError: {e}. Skipping element in docID "
-                                          f"starting with {docID[:6]}.")
+                                          f"starting with {doc_id[:6]}.")
         except etree.ParserError as e:
             self.logger.error(f"Tokenizer: etree.ParserError: {e}. Aborting scanning docID starting "
-                              f"with {docID[:6]}.")
+                              f"with {doc_id[:6]}.")
             return list()
 
         tokens = list(tokens.values())
-        self.logger.debug(f"Tokens in URL {url}, docID starting with {docID[:6]}: {[token.token for token in tokens]}")
+        self.logger.debug(f"Tokens in URL {url}, docID starting with {doc_id[:6]}: {[token.token for token in tokens]}")
         return tokens
 
 
