@@ -104,7 +104,7 @@ class Tokenizer:
                         # Is the text empty? Skip.
                         if element.text is None:
                             continue
-                        # Get each word in the tag.
+                        # Get each word in the tag. TODO: Maybe keep track of the word count to add "position" to token.
                         for word in re.split(r"[^a-zA-Z0-9]+", element.text):
                             # Porter stemming (as suggested)
                             word = self.porter.stem(word.lower())
