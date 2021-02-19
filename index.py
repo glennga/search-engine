@@ -61,7 +61,7 @@ class Tokenizer:
         # TODO: Tokenize content
         try:
             # Get the XML content from the string.
-            root = html.fromstring(content.decode(encoding=encoding))
+            root = html.fromstring(content)#.decode(encoding=encoding, errors="ignore"))
 
             # Get metadata and prepare the relevant tokens.
             meta_names = root.xpath("//meta[@name]")
