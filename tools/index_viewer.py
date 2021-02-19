@@ -1,34 +1,27 @@
 import argparse
 import pickle
-import zlib
+import time
 
 # Required for pickle!
 from index import IndexDescriptor
 
 
-def _generator(in_fp):
-    """ Deserialize the given ordered disk component to the an ordered list of <token, inverted list> pairs.
-
-    To avoid having to load the entire disk component into memory, we return a generator of <token, inverted list>
-    pairs. The order in which the generator returns these pairs is the same order in which it was serialized (in
-    alphabetical order of the tokens).
-
-    :param in_fp: Binary file pointer of the disk component to deserialize.
-    :return: A generator of <token, inverted list> pairs.
-    """
-    def _token_pair_generator():
+def _generator_file(in_fp):
+    """ Deserialize a file into an iterator of the list of its pickled objects. """
+    def _entry_generator():
         try:
             while True:
-                yield pickle.load(in_fp)
+                entry = pickle.load(in_fp)
+                yield entry
 
         except EOFError:
             return
 
-    return _token_pair_generator()
+    return _entry_generator()
 
 
 def _search(in_fp, in_desc, word):
-    """ Search for a given word using the index descriptor and the index file. """
+    """ Search for a given word using the index descriptor and the index file. We return the **1st** result. """
     designated_tell = in_desc[word]
     if designated_tell is None:
         print(f'Could not find larger entry in index, starting from position {0}')
@@ -37,17 +30,18 @@ def _search(in_fp, in_desc, word):
         print(f'Starting from position {designated_tell}.')
 
     in_fp.seek(designated_tell)
-    search_generator = _generator(in_fp)
-    for data_entry in search_generator:
-        if data_entry[0] == word:
-            return {data_entry[0]: [pickle.loads(zlib.decompress(e)) for e in data_entry[1]]}
+    search_generator = _generator_file(in_fp)
+    try:
+        while True:
+            token, postings_count = next(search_generator)
+            if token == word:
+                return next(search_generator)
+            else:
+                [next(search_generator) for _ in range(postings_count)]
 
-        elif data_entry[0] > word:
-            print('Word does not exist!')
-            return None
-
-    print('Word does not exist!')
-    return None
+    except EOFError:
+        print('Word does not exist!')
+        return None
 
 
 if __name__ == '__main__':
@@ -59,9 +53,13 @@ if __name__ == '__main__':
 
     with open(command_line_args.index, 'rb') as index_fp, open(command_line_args.desc, 'rb') as desc_fp:
         if command_line_args.word is None:
-            generator = _generator(index_fp)
+            generator = _generator_file(index_fp)
             for entry in generator:
-                print({entry[0]: [pickle.loads(zlib.decompress(e)) for e in entry[1]]})
+                print(entry)
+
         else:
-            descriptor = next(_generator(desc_fp))
+            descriptor = next(_generator_file(desc_fp))
+            before_search = time.process_time()
             print(_search(index_fp, descriptor, command_line_args.word))
+            after_search = time.process_time()
+            print(f"Search from index = {1000.0 * (after_search - before_search)}ms")

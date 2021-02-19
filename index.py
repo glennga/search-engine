@@ -8,7 +8,7 @@ import os
 import re
 import heapq
 import random
-import zlib
+import uuid
 
 from lxml import etree, html
 from pathlib import Path
@@ -164,6 +164,7 @@ class IndexDescriptor:
         self.skip_probability = kwargs['storage']['skipProbability']
         self.l1_probability = kwargs['storage']['l1Probability']
         self.max_skip_height = kwargs['storage']['maxSkipHeight']
+        self.corpus_size = kwargs['corpusSize']
         self.index_name = kwargs['indexFile']
         self.corpus = kwargs['corpus']
 
@@ -194,6 +195,7 @@ class IndexDescriptor:
             'indexFile': self.index_name,
             'timeBuilt': self.time_built,
             'corpus': self.corpus,
+            'corpusSize': self.corpus_size,
             'skipListMeta': {
                 'skipProbability': self.skip_probability,
                 'l1Probability': self.l1_probability,
@@ -279,13 +281,11 @@ class StorageHandler:
        tree requires another pass of our entire index (or some more complex bookkeeping of our index while we build
        it)- but building a skip list can be done after the merge process simply and efficiently by just sampling while
        we build the index.
-    e) A single inverted list MUST be able to fit into memory, but <token, inverted list> pairs can extend out of
-       memory. TODO: See if we can lax this constraint later.
-
     """
-    def __init__(self, corpus, **kwargs):
+    def __init__(self, corpus, postings_f, **kwargs):
         self.merge_queue = deque()
         self.memory_component = dict()
+        self.postings_f = postings_f
         self.config = kwargs
         self.config['corpus'] = corpus
 
@@ -305,7 +305,7 @@ class StorageHandler:
         if sys.getsizeof(self.memory_component) > self.config['storage']['spillThreshold']:
             self._spill()
 
-    def close(self) -> tuple:
+    def close(self, document_count) -> tuple:
         """ Merge all of our partial disk components and the current in-memory component to a single inverted file.
 
         1. If we do not have any disk components, then our entire index resides in memory. Spill this to disk, and move
@@ -317,13 +317,14 @@ class StorageHandler:
         4. Move the remaining disk component file to the specified data directory. The merge is finished.
         5. Write our metadata to a descriptor file. This includes the skip list for searching the index file.
 
+        :param document_count: All documents that were tokenized (used in index descriptor).
         :return The names of the generated index file and descriptor file.
         """
         if len(self.merge_queue) == 0:
             logger.info('No disk components found. Writing in-memory component to disk.')
             l1_token_tells = self._spill()
 
-        while len(self.merge_queue) > 1:
+        while len(self.merge_queue) > 1 or len(self.memory_component) != 0:
             merge_level = min(int(re.search(r'.*/d([0-9]).*', f).group(1)) for f in self.merge_queue) + 1
             run_file = f'd{merge_level}_' + str(datetime.datetime.now().isoformat()) + '.comp'
             logger.info(f'Starting merge to generate file {run_file}.')
@@ -332,9 +333,8 @@ class StorageHandler:
                 with open(self.merge_queue.popleft(), 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
-                    native_memory_component = [(t, list(i)) for t, i in self.memory_component.items()]
-                    left_component = iter(sorted(native_memory_component, key=lambda t: t[0]))
-                    right_component = self._generator(right_fp)
+                    left_component = self._generator_dict(self.memory_component, lambda k: k[0])
+                    right_component = self._generator_file(right_fp)
                     l1_token_tells = self._merge(left_component, right_component, out_fp)
                     self.memory_component.clear()
 
@@ -343,16 +343,17 @@ class StorageHandler:
                      open(self.merge_queue.popleft(), 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
-                    left_component = self._generator(left_fp)
-                    right_component = self._generator(right_fp)
+                    left_component = self._generator_file(left_fp)
+                    right_component = self._generator_file(right_fp)
                     l1_token_tells = self._merge(left_component, right_component, out_fp)
 
             self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + run_file)
 
-        data_file = str(datetime.datetime.now().isoformat()) + '.idx'
+        data_file = str(uuid.uuid4()) + '.idx'
         os.rename(self.merge_queue.popleft(), self.config['storage']['dataDirectory'] + '/' + data_file)
         logger.info(f'Merge has finished. Index {data_file} has been built.')
         self.config['indexFile'] = data_file
+        self.config['corpusSize'] = document_count
 
         descriptor_file = re.search(r'(.*).idx', data_file).group(1) + '.desc'
         with open(self.config['storage']['dataDirectory'] + '/' + descriptor_file, 'wb') as descriptor_fp:
@@ -371,19 +372,21 @@ class StorageHandler:
 
         :return A randomly sampled ordered list of <tokens, byte location> pairs.
         """
-        spill_file = 'd0_' + str(datetime.datetime.now().isoformat()) + '.comp'
+        spill_file = 'd0_' + str(uuid.uuid4()) + '.comp'
         logger.info(f'Spilling component {spill_file} to disk.')
         l1_token_tells = list()
 
-        with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as spill_fp:
-            ordered_memory_component = sorted(self.memory_component.items(), key=lambda token: token[0])
-            for disk_entry in ordered_memory_component:
+        with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as out_fp:
+            ordered_memory_component = sorted(self.memory_component.items(), key=lambda k: k[0])
+            for token, postings in ordered_memory_component:
                 if random.random() < self.config['storage']['l1Probability']:
-                    l1_token_tells.append((disk_entry[0], spill_fp.tell(), ))
+                    logger.debug(f'Adding {(token, out_fp.tell(),)} to L1 layer of skip list.')
+                    l1_token_tells.append((token, out_fp.tell(),))
 
-                native_entry = (disk_entry[0], list(disk_entry[1]))
-                logger.debug(f'Writing entry {native_entry} to disk.')
-                pickle.dump(native_entry, spill_fp)
+                logger.debug(f'Writing token {token} with {len(postings)} postings to disk.')
+                pickle.dump((token, len(postings)), out_fp)
+                for posting in postings:
+                    pickle.dump(posting, out_fp)
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
@@ -407,118 +410,138 @@ class StorageHandler:
         4. While performing the merge, we randomly sample tokens to build the first layer of our skip list. The skip
            list grows with smaller 'skipProbability', and shrinks with larger 'skipProbability'.
 
-        :param left_component: Iterator that produces sorted <token, inverted list> pairs.
-        :param right_component: Iterator that produces sorted <token, inverted list> pairs.
+        :param left_component: Iterator that produces a sequence of token, then posting count, and then postings.
+        :param right_component: Iterator that produces a sequence of token, then posting count, and then postings.
         :return A randomly sampled ordered list of <tokens, byte location> pairs.
         """
         def _advance(component):
+            """ Return the token of the current cursor and the number of postings associated with the token. """
             try:
-                token = next(component)
+                token, posting_count = next(component)
                 is_exhausted = False
             except StopIteration:
                 token = None
+                posting_count = 0
                 is_exhausted = True
-            return token, is_exhausted
+            return token, posting_count, is_exhausted
+
+        def _postings(component, posting_count):
+            """ Return the posting of the component at the current cursor for postings_count times. """
+            for i in range(posting_count):
+                yield next(component)
+
+        def _write(token, posting_count, postings):
+            """ Write the inverted list to our file pointer. """
+            if random.random() < self.config['storage']['l1Probability']:
+                logger.debug(f'Adding {(token, out_fp.tell(), )} to L1 layer of skip list.')
+                l1_token_tells.append((token, out_fp.tell(), ))
+
+            logger.debug(f'Writing token {token} with {posting_count} postings to disk.')
+            pickle.dump((token, posting_count), out_fp)
+            for posting in postings:
+                pickle.dump(posting, out_fp)
 
         l1_token_tells = list()
-        left_token_pair, is_left_exhausted = _advance(left_component)
-        right_token_pair, is_right_exhausted = _advance(right_component)
+        left_token, left_posting_count, is_left_exhausted = _advance(left_component)
+        right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
         while True:
+            left_postings_iterable = _postings(left_component, left_posting_count)
+            right_postings_iterable = _postings(right_component, right_posting_count)
+
             if not is_left_exhausted and not is_right_exhausted:
-                if left_token_pair[0] == right_token_pair[0]:
-                    out_entry = (left_token_pair[0], list(heapq.merge(left_token_pair[1], right_token_pair[1])))
-                    left_token_pair, is_left_exhausted = _advance(left_component)
-                    right_token_pair, is_right_exhausted = _advance(right_component)
+                if left_token == right_token:
+                    merged_postings = heapq.merge(left_postings_iterable, right_postings_iterable, key=self.postings_f)
+                    _write(left_token, left_posting_count + right_posting_count, merged_postings)
+                    left_token, left_posting_count, is_left_exhausted = _advance(left_component)
+                    right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
-                elif left_token_pair[0] > right_token_pair[0]:
-                    out_entry = right_token_pair
-                    right_token_pair, is_right_exhausted = _advance(right_component)
+                elif left_token > right_token:
+                    _write(right_token, right_posting_count, right_postings_iterable)
+                    right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
-                else:  # left_token_pair[0] < right_token_pair[0]
-                    out_entry = left_token_pair
-                    left_token_pair, is_left_exhausted = _advance(left_component)
+                else:  # left_token < right_token
+                    _write(left_token, left_posting_count, left_postings_iterable)
+                    left_token, left_posting_count, is_left_exhausted = _advance(left_component)
 
             elif is_left_exhausted and not is_right_exhausted:
-                out_entry = right_token_pair
-                right_token_pair, is_right_exhausted = _advance(right_component)
+                _write(right_token, right_posting_count, right_postings_iterable)
+                right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
             elif not is_left_exhausted and is_right_exhausted:
-                out_entry = left_token_pair
-                left_token_pair, is_left_exhausted = _advance(left_component)
+                _write(left_token, left_posting_count, left_postings_iterable)
+                left_token, left_posting_count, is_left_exhausted = _advance(left_component)
 
             else:  # is_left_exhausted and is_right_exhausted
                 break
 
-            if random.random() < self.config['storage']['l1Probability']:
-                logger.debug(f'Adding {(out_entry[0], out_fp.tell(), )} to L1 layer of skip list.')
-                l1_token_tells.append((out_entry[0], out_fp.tell(), ))
-
-            logger.debug(f'Writing entry {out_entry} to disk.')
-            pickle.dump(out_entry, out_fp)
-
         return l1_token_tells
 
     @staticmethod
-    def _generator(in_fp):
-        """ Deserialize the given ordered disk component to the an ordered list of <token, inverted list> pairs.
+    def _generator_dict(in_dict, entry_f):
+        """ Turn a given dictionary into an iterator that returns <key, count> and the consequent sorted entries.  """
+        def _entry_generator():
+            for k, v in sorted(in_dict.items(), key=entry_f):
+                yield k, len(v)
+                for p in v:
+                    yield p
 
-        To avoid having to load the entire disk component into memory, we return a generator of <token, inverted list>
-        pairs. The order in which the generator returns these pairs is the same order in which it was serialized (in
-        alphabetical order of the tokens).
+        return _entry_generator()
 
-        :param in_fp: Binary file pointer of the disk component to deserialize.
-        :return: A generator of <token, inverted list> pairs.
-        """
-        def _token_pair_generator():
+    @staticmethod
+    def _generator_file(in_fp):
+        """ Deserialize a file into an iterator of the list of its pickled objects. """
+        def _entry_generator():
             try:
                 while True:
-                    token_pair = pickle.load(in_fp)
-                    logger.debug(f'Returning entry {token_pair} to caller.')
-                    yield token_pair
+                    entry = pickle.load(in_fp)
+                    logger.debug(f'Returning entry {entry} to caller.')
+                    yield entry
 
             except EOFError:
                 return
 
-        return _token_pair_generator()
+        return _entry_generator()
 
 
 class Indexer:
     def __init__(self, corpus, **kwargs):
-        self.corpus = corpus
         self.config = kwargs
-
         self.tokenizer = Tokenizer()
-        self.corpus_path = Path(self.corpus)
-        self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), **kwargs)
+        self.corpus_path = Path(corpus)
+
+        self.postings_f = lambda e: e[3]  # We are going to sort by the term frequency.
+        self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, **kwargs)
 
     def index(self):
         logger.info(f"Corpus Path: {self.corpus_path.absolute()}.")
+        document_count = 0
+
         for subdomain_directory in self.corpus_path.iterdir():
             if not subdomain_directory.is_dir():
                 continue
             logger.info(f"Reading files in the subdomain directory {subdomain_directory}.")
+
             for file in subdomain_directory.iterdir():
                 document_path = '/'.join(file.parts[1:])
                 if not file.is_file():
                     continue
+
                 logger.info(f"Tokenizing file {file.name}, in path {document_path}.")
                 tokens = self.tokenizer.tokenize(file)
+                document_count += 1
 
                 for token in tokens:
-                    raw_entry = (document_path, token.frequency, token.tags, )
-                    compressed_entry = zlib.compress(pickle.dumps(raw_entry))
-                    logger.debug(f"Compressing entry. Size difference of "
-                                 f"{sys.getsizeof(raw_entry) - sys.getsizeof(compressed_entry)} bytes.")
-                    logger.debug(f"Now passing token to storage handler: {token.token}: (not compressed) {raw_entry}")
-                    self.storage_handler.write(token.token, compressed_entry)
+                    entry = (document_path, token.frequency, token.tags, token.document_pos, )
+                    logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
+                    self.storage_handler.write(token.token, entry)
 
                 # Break for now as a test.
-                # self.storage_handler.close()
+                # self.storage_handler.close(document_count)
                 # return
 
         # Close the storage handler.
-        self.storage_handler.close()
+        self.storage_handler.close(document_count)
 
 
 if __name__ == '__main__':
