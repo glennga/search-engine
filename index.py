@@ -58,23 +58,21 @@ class Tokenizer:
             content = data["content"].encode()
         self.logger.info(f"DocID starting with {doc_id[:6]} contains URL {url} with encoding {encoding}.")
 
-        # TODO: Tokenize content
         try:
             # Get the XML content from the string.
-            root = html.fromstring(content)#.decode(encoding=encoding, errors="ignore"))
+            root = html.fromstring(content)  # .decode(encoding=encoding, errors="ignore"))
 
             # Get metadata and prepare the relevant tokens.
             meta_names = root.xpath("//meta[@name]")
             meta_names_content = []
             for meta_name in meta_names:
                 attribute = meta_name.attrib
-                # TODO: if the metadata name matches a criteria, add it to the list.
                 try:
                     if attribute["name"] in ["title", "description", "author", "keywords"]:
                         content = ""
-                        if attribute.has_key("content"):
+                        if "content" in attribute:
                             content += str(attribute["content"]) + " "
-                        if attribute.has_key("value"):
+                        if "value" in attribute:
                             content += str(attribute["value"]) + " "
                         meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
@@ -98,9 +96,9 @@ class Tokenizer:
                         # Is the text empty? Skip.
                         if element.text is None:
                             continue
-                        # Get each word in the tag. TODO: Maybe keep track of the word count to add "position" to token.
+                        # Get each word in the tag.
                         for word in re.split(r"[^a-zA-Z0-9]+", element.text):
-                            # Porter stemming (as suggested)
+                            # Porter stemming (as suggested).
                             word = self.porter.stem(word.lower())
                             # Does the word even have content?
                             if len(word) <= 0:
@@ -108,11 +106,12 @@ class Tokenizer:
                                 continue
                             # Is the word not in the tokens list?
                             if word not in tokens:
-                                tokens[word] = self.Token(word, 1, token_count, [element.tag])
+                                tokens[word] = self.Token(word, 1, [token_count], [element.tag])
                             # The word is in the tokens list.
                             else:
                                 token = tokens[word]
                                 token.frequency += 1
+                                token.document_pos.append(token_count)
                                 if element.tag not in token.tags:
                                     token.tags.append(element.tag)
                             token_count += 1
@@ -300,7 +299,7 @@ class StorageHandler:
         self.memory_component[token].add(entry)
 
         if sys.getsizeof(self.memory_component) > self.config['storage']['spillThreshold']:
-            self._spill()
+            self._spill(False)
 
     def close(self, document_count) -> tuple:
         """ Merge all of our partial disk components and the current in-memory component to a single inverted file.
@@ -319,7 +318,7 @@ class StorageHandler:
         """
         if len(self.merge_queue) == 0:
             logger.info('No disk components found. Writing in-memory component to disk.')
-            l1_token_tells = self._spill()
+            l1_token_tells = self._spill(True)
 
         while len(self.merge_queue) > 1 or len(self.memory_component) != 0:
             merge_level = min(int(re.search(r'.*/d([0-9]).*', f).group(1)) for f in self.merge_queue) + 1
@@ -332,7 +331,7 @@ class StorageHandler:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
                     left_component = self._generator_dict(self.memory_component, lambda k: k[0])
                     right_component = self._generator_file(right_fp)
-                    l1_token_tells = self._merge(left_component, right_component, out_fp)
+                    l1_token_tells = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
                     self.memory_component.clear()
 
             else:
@@ -342,7 +341,7 @@ class StorageHandler:
                     logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
                     left_component = self._generator_file(left_fp)
                     right_component = self._generator_file(right_fp)
-                    l1_token_tells = self._merge(left_component, right_component, out_fp)
+                    l1_token_tells = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
 
             self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + run_file)
 
@@ -359,7 +358,7 @@ class StorageHandler:
 
         return data_file, descriptor_file
 
-    def _spill(self):
+    def _spill(self, is_last_spill):
         """ Spill the current in-memory component to disk.
 
         1. Give total order to memory component. We will store each <token, inverted list> in alphabetical token order.
@@ -367,6 +366,7 @@ class StorageHandler:
            serialize each pair.
         3. Randomly sample tokens to build the L1 layer of a skip list (only applicable if this is the last spill).
 
+        :param is_last_spill: Denotes whether or not to sample tokens for the skip list.
         :return A randomly sampled ordered list of <tokens, byte location> pairs.
         """
         spill_file = 'd0_' + str(uuid.uuid4()) + '.comp'
@@ -376,7 +376,7 @@ class StorageHandler:
         with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as out_fp:
             ordered_memory_component = sorted(self.memory_component.items(), key=lambda k: k[0])
             for token, postings in ordered_memory_component:
-                if random.random() < self.config['storage']['l1Probability']:
+                if is_last_spill and random.random() < self.config['storage']['l1Probability']:
                     logger.debug(f'Adding {(token, out_fp.tell(),)} to L1 layer of skip list.')
                     l1_token_tells.append((token, out_fp.tell(),))
 
@@ -389,7 +389,7 @@ class StorageHandler:
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
         return l1_token_tells
 
-    def _merge(self, left_component, right_component, out_fp):
+    def _merge(self, left_component, right_component, is_last_merge, out_fp):
         """ Merge the two components together in a "merge-join" fashion, writing to the given file pointer.
 
         1. Open a new disk component, prefixed with "d{n}", where n = the current merge depth.
@@ -429,7 +429,7 @@ class StorageHandler:
 
         def _write(token, posting_count, postings):
             """ Write the inverted list to our file pointer. """
-            if random.random() < self.config['storage']['l1Probability']:
+            if is_last_merge and random.random() < self.config['storage']['l1Probability']:
                 logger.debug(f'Adding {(token, out_fp.tell(), )} to L1 layer of skip list.')
                 l1_token_tells.append((token, out_fp.tell(), ))
 
@@ -507,7 +507,7 @@ class Indexer:
         self.tokenizer = Tokenizer()
         self.corpus_path = Path(corpus)
 
-        self.postings_f = lambda e: e[3]  # We are going to sort by the term frequency.
+        self.postings_f = lambda e: e[1]  # We are going to sort by the term frequency.
         self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, **kwargs)
 
     def index(self):

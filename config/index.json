@@ -4,7 +4,7 @@
     "spillDirectory": "out/spill",
     "dataDirectory": "out/data",
     "skipProbability": 0.5,
-    "l1Probability": 0.1,
+    "l1Probability": 1.0,
     "maxSkipHeight": 20
   }
 }
