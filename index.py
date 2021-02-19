@@ -48,9 +48,6 @@ class Tokenizer:
         # Set up variables and get doc ID from file name.
         doc_id = file.name.rstrip(".json")
         tokens = {}  # Use dict for easy lookup, then convert to list before returning.
-        # url = ""
-        # data = {}
-        # encoding = ""
 
         # Populate the initialized variables from JSON.
         self.logger.info(f"Now opening file: {doc_id}.json")
@@ -58,13 +55,13 @@ class Tokenizer:
             data = json.loads(f.read())
             url = data["url"]
             encoding = data["encoding"]
-            content = data["content"].encode(encoding=encoding)
+            content = data["content"].encode()
         self.logger.info(f"DocID starting with {doc_id[:6]} contains URL {url} with encoding {encoding}.")
 
         # TODO: Tokenize content
         try:
             # Get the XML content from the string.
-            root = html.fromstring(content)
+            root = html.fromstring(content.decode(encoding=encoding))
 
             # Get metadata and prepare the relevant tokens.
             meta_names = root.xpath("//meta[@name]")
