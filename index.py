@@ -9,6 +9,7 @@ import re
 import heapq
 import random
 import uuid
+import hashlib
 
 from lxml import etree, html
 from pathlib import Path
@@ -45,6 +46,8 @@ class Tokenizer:
         self.logger = __init__.get_logger('Tokenizer')
 
     def tokenize(self, file):
+        """ :return A list of tokens, the URL, and the token hash associated with this document. """
+
         # Set up variables and get doc ID from file name.
         doc_id = file.name.rstrip(".json")
         tokens = {}  # Use dict for easy lookup, then convert to list before returning.
@@ -121,11 +124,11 @@ class Tokenizer:
         except etree.ParserError as e:
             self.logger.error(f"Tokenizer: etree.ParserError: {e}. Aborting scanning docID starting "
                               f"with {doc_id[:6]}.")
-            return list()
+            return list(), url, None
 
         tokens = list(tokens.values())
         self.logger.debug(f"Tokens in URL {url}, docID starting with {doc_id[:6]}: {[token.token for token in tokens]}")
-        return tokens
+        return tokens, url, hashlib.md5(pickle.dumps(tokens)).digest()
 
 
 class IndexDescriptor:
@@ -520,16 +523,15 @@ class Indexer:
             logger.info(f"Reading files in the subdomain directory {subdomain_directory}.")
 
             for file in subdomain_directory.iterdir():
-                document_path = '/'.join(file.parts[1:])
                 if not file.is_file():
                     continue
 
-                logger.info(f"Tokenizing file {file.name}, in path {document_path}.")
-                tokens = self.tokenizer.tokenize(file)
+                logger.info(f"Tokenizing file {file.name}, in path {'/'.join(file.parts[1:])}.")
+                tokens, url, token_hash = self.tokenizer.tokenize(file)
                 document_count += 1
 
                 for token in tokens:
-                    entry = (document_path, token.frequency, token.tags, token.document_pos, )
+                    entry = (url, token.frequency, token.tags, token.document_pos, token_hash, )
                     logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
                     self.storage_handler.write(token.token, entry)
 
