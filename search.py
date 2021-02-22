@@ -14,6 +14,20 @@ class Ranker:
     def __init__(self, **kwargs):
         self.config = kwargs
 
+    def tf(self, frequency):
+        # TODO: do we use a more sophisticated formula
+        # Returns the frequency
+        return frequency
+
+    def idf(self, document_count):
+        # TODO: how do we get the entire corpus count to calculate this
+        # Returns the document count
+        return document_count
+
+    def tf_idf(self, frequency, document_count):
+        # TODO: return the multiplication of the above two functions
+        return self.tf(frequency) * self.idf(document_count)
+
     def rank(self, index_entries):
         """ Return an iterator of URLs in ranked order.
 
@@ -21,6 +35,17 @@ class Ranker:
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
         :return: Iterator of URLs in ranked order.
         """
+        rankings = dict() # {url: tf-idf}
+        for entry in index_entries:
+            token, document_count, postings = entry
+            print(f"{token}, {document_count}, {postings}")
+
+            for posting in postings:
+                # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
+                url, token_frequency , token_tags, token_document_pos, token_hash = posting
+                rankings["url"] = self.tf_idf(token_frequency, document_count)
+
+        return iter(sorted(rankings.keys(), key=lambda x: -x[1]))
 
 
 class Retriever:
