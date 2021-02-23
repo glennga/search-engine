@@ -298,7 +298,7 @@ class StorageHandler:
         :param entry: The document descriptor, which is an arbitrary sequence of bytes.
         """
         if token not in self.memory_component:
-            self.memory_component[token] = SortedList()
+            self.memory_component[token] = SortedList(key=self.postings_f)
         self.memory_component[token].add(entry)
 
         if sys.getsizeof(self.memory_component) > self.config['storage']['spillThreshold']:
