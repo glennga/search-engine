@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import math
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QLineEdit, QPushButton, QMainWindow, QVBoxLayout,  QListWidget,\
@@ -15,14 +16,14 @@ class Ranker:
         self.config = kwargs
 
     def tf(self, frequency):
-        # TODO: do we use a more sophisticated formula
-        # Returns the frequency
+        # TODO: do we use a more sophisticated formula?
+        # Current formula: returns the token frequency.
         return frequency
 
     def idf(self, document_count):
         # TODO: how do we get the entire corpus count to calculate this
-        # Returns the document count
-        return document_count
+        # Current formula: returns the log of total docs / docs that the token is in.
+        return math.log10(self.config["total_docs_in_corpus"] / document_count)
 
     def tf_idf(self, frequency, document_count):
         # TODO: return the multiplication of the above two functions
@@ -42,8 +43,8 @@ class Ranker:
 
             for posting in postings:
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
-                url, token_frequency , token_tags, token_document_pos, token_hash = posting
-                rankings["url"] = self.tf_idf(token_frequency, document_count)
+                url, token_frequency, token_tags, token_document_pos, token_hash = posting
+                rankings[url] = self.tf_idf(token_frequency, document_count)
 
         return iter(sorted(rankings.keys(), key=lambda x: -x[1]))
 
