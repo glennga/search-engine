@@ -282,6 +282,14 @@ class StorageHandler:
        we build the index.
     """
     def __init__(self, corpus, postings_f, **kwargs):
+        # Ensure that the directory exists first...
+        if not os.path.exists(kwargs['storage']['spillDirectory']):
+            logger.info(kwargs['storage']['spillDirectory'] + ' not found. Building now.')
+            os.makedirs(kwargs['storage']['spillDirectory'])
+        if not os.path.exists(kwargs['storage']['dataDirectory']):
+            logger.info(kwargs['storage']['dataDirectory'] + ' not found. Building now.')
+            os.makedirs(kwargs['storage']['dataDirectory'])
+
         self.merge_queue = deque()
         self.memory_component = dict()
         self.postings_f = postings_f
