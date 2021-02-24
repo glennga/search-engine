@@ -92,7 +92,7 @@ class Retriever:
             normalized_word = self.porter.stem(search_term.lower())
             designated_tell = self.descriptor[normalized_word]
             if designated_tell is None:
-                logger.info(f'Could not find larger entry in index, starting from position {0}')
+                logger.info(f'Could not find larger entry in index, starting from position {0}.')
                 designated_tell = 0
             else:
                 logger.info(f'Starting from position {designated_tell}.')
@@ -107,7 +107,6 @@ class Retriever:
                         logger.info(f'Word {normalized_word} ({search_term}) found!')
                         ranking_input.append((token, postings_count, search_generator))
                         break
-
                     elif token < normalized_word:
                         logger.debug(f'Searching... Skipping over word {token}.')
                         [next(search_generator) for _ in range(postings_count)]
@@ -192,13 +191,16 @@ class Presenter:
             self.view.results_label.setText(f'{lower_bound + 1} to {upper_bound} results displayed.')
             self.view.results_list.clear()
             for i, url in enumerate(self.working_results[lower_bound:upper_bound]):
+                logger.debug(f'Adding result URL {url} to display.')
                 self.view.add_result(url, i + lower_bound + 1)
 
         def _prev_action(self):
+            logger.info('"Previous Page" button clicked.')
             self.results_cursor = self.results_cursor - self.config['resultsPerPage']
             self._display_results()
 
         def _next_action(self):
+            logger.info('"Next Page" button clicked.')
             self.results_cursor = self.results_cursor + self.config['resultsPerPage']
             self._display_results()
 
