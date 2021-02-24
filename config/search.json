@@ -1,3 +1,8 @@
 {
-
+  "presentation": {
+    "startingText": "Type in your query and hit search!",
+    "startingWindowSize": [1280, 480],
+    "resultItemFontSize": 15,
+    "resultsPerPage": 25
+  }
 }
