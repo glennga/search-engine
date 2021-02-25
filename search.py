@@ -225,12 +225,12 @@ class Presenter:
 
         def _prev_action(self):
             logger.info('"Previous Page" button clicked.')
-            self.results_cursor = self.results_cursor - self.config['resultsPerPage']
+            self.results_cursor = self.results_cursor - self.config['presentation']['resultsPerPage']
             self._display_results()
 
         def _next_action(self):
             logger.info('"Next Page" button clicked.')
-            self.results_cursor = self.results_cursor + self.config['resultsPerPage']
+            self.results_cursor = self.results_cursor + self.config['presentation']['resultsPerPage']
             self._display_results()
 
     class View(QMainWindow):
