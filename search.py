@@ -70,18 +70,30 @@ class Ranker:
         :return: List of URLs in ranked order.
         """
         rankings = dict()  # {url: tf-idf}
+        t_prev = time.process_time()
+
         for entry in index_entries:
             token, postings_count, postings = entry
-            logger.debug(f'Given entry ({token}, {postings_count}, {postings}).')
+            logger.debug(f'Now ranking entry ({token}, {postings_count}, {postings}).')
 
             for _ in range(postings_count):
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
-                rankings[url] = (
-                    (self.tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
-                    * (self.tag_value(token_tags) * self.config['ranker']['composite']['tags'])
-                    * (self.pos_value(token_document_pos) * self.config['ranker']['composite']['documentPos'])
-                )
+
+                v1 = (self.tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
+                v2 = (self.tag_value(token_tags) * self.config['ranker']['composite']['tags'])
+                v3 = (self.pos_value(token_document_pos) * self.config['ranker']['composite']['documentPos'])
+                # logger.debug(f'tf-idf value for document {url} of entry {entry} is {v1}.')
+                # logger.debug(f'Tags value for document {url} of entry {entry} is {v2}.')
+                # logger.debug(f'Position value for document {url} of entry {entry} is {v3}.')
+
+                if url not in rankings:
+                    rankings[url] = 0
+                rankings[url] += v1 * v2 * v3
+
+            t_current = time.process_time()
+            logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_prev)}ms.')
+            t_prev = t_current
 
         return [x[0] for x in sorted(rankings.items(), key=lambda i: -i[1])]
 
@@ -116,6 +128,7 @@ class Retriever:
         logger.info(f'Retrieval has been invoked.')
         ranking_input = list()
 
+        t0 = time.process_time()
         for search_term in args:
             normalized_word = self.porter.stem(search_term.lower())
             designated_tell = self.descriptor[normalized_word]
@@ -145,7 +158,13 @@ class Retriever:
             except EOFError:
                 logger.info(f'Word {search_term} not found [EOF reached]. Not including in ranking.')
 
-        return self.ranker.rank(ranking_input)
+        t1 = time.process_time()
+        logger.info(f'Time to search words in skip list: {1000.0 * (t1 - t0)}ms.')
+        ranking_output = self.ranker.rank(ranking_input)
+
+        t2 = time.process_time()
+        logger.info(f'Time to fetch results + perform ranking: {1000.0 * (t2 - t1)}ms.')
+        return ranking_output
 
     @staticmethod
     def _generator(in_fp):
