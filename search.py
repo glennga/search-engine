@@ -24,33 +24,10 @@ class Ranker:
     def __init__(self, **kwargs):
         self.config = kwargs
 
-    def tf(self, frequency, tags, document_pos):
+    def tf(self, frequency):
         # TODO: do we use a more sophisticated formula?
         # Current formula: returns the token frequency.
-
-        # Currently, our tags arg show if a tag has been applied to it at least once.
-        # If the tags exist, we can add a multiplier to the frequency.
-        # We can probably tune this.
-
-        tag_multiplier = 1.0
-        for tag in tags:
-            # Tags of interest: <bold>, <h1/h2/h3/h4/h5/h6>, and <title>. What about meta? And anchor text <a>?
-            if tag in ["b", "strong"]:
-                tag_multiplier += 0.05
-            elif tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-                tag_multiplier += 0.1
-            elif tag in ["title"]:
-                tag_multiplier += 0.3
-            elif tag in ["meta"]:
-                tag_multiplier += 0.2
-            elif tag in ["a"]:
-                # tag_multipler += 0.1
-                # Can anchor text algorithm be applied here at all?
-                pass
-
-        # TODO: for word positions, how early should a word show up for it to be important?
-
-        return frequency * tag_multiplier
+        return frequency
 
     def idf(self, document_count):
         # TODO: how do we get the entire corpus count to calculate this
@@ -59,7 +36,7 @@ class Ranker:
 
     def tf_idf(self, frequency, tags, document_pos, document_count):
         # TODO: return the multiplication of the above two functions
-        return self.tf(frequency, tags, document_pos) * self.idf(document_count)
+        return self.tf(frequency) * self.idf(document_count)
 
     def rank(self, index_entries):
         """ Return an iterator of URLs in ranked order.
@@ -76,7 +53,9 @@ class Ranker:
             for _ in range(postings_count):
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
-                rankings[url] = self.tf_idf(token_frequency, token_tags, token_document_pos, postings_count)
+                rankings[url] = (
+                    self.tf_idf(token_frequency, token_tags, token_document_pos, postings_count)
+                )
 
         return [x[0] for x in sorted(rankings.items(), key=lambda i: i[1])]
 
@@ -196,7 +175,7 @@ class Presenter:
 
         def _display_results(self):
             """ Display the results, given our search cursor and results list."""
-            upper_bound = min(self.results_cursor + self.config['resultsPerPage'], len(self.working_results))
+            upper_bound = min(self.results_cursor + self.config['presentation']['resultsPerPage'], len(self.working_results))
             lower_bound = self.results_cursor
             logger.info(f'Displaying results from {lower_bound} to {upper_bound}.')
 
