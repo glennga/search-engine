@@ -6,8 +6,29 @@
     "resultsPerPage": 25
   },
   "ranker": {
-    "tf_idf_weight_1": 1.0,
-    "terms_weight_2": 1.0,
-    "document_pos_weight_3": 1.0
+    "composite": {
+      "tfIdf": 1.0,
+      "tags": 1.0,
+      "documentPos": 1.0
+    },
+    "tfIdf": {
+      "tfWeight": 1.0,
+      "idfWeight": 1.0
+    },
+    "tags": {
+      "b": 0.1,
+      "strong": 0.1,
+      "h1": 0.3,
+      "h2": 0.3,
+      "h3": 0.15,
+      "h4": 0.15,
+      "h5": 0.15,
+      "h6": 0.15,
+      "title": 1.2,
+      "meta": 0.7
+    },
+    "documentPos": {
+      "cutoff": 100
+    }
   }
 }

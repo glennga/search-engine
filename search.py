@@ -25,48 +25,41 @@ class Ranker:
         self.config = kwargs
 
     def tf(self, frequency):
-        # TODO: do we use a more sophisticated formula?
-        # Current formula: returns the token frequency.
-        return frequency
+        """ Current formula: returns the weighted token frequency. """
+        return self.config['ranker']['tfIdf']['tfWeight'] * frequency
 
     def idf(self, document_count):
-        # TODO: how do we get the entire corpus count to calculate this
-        # Current formula: returns the log of total docs / docs that the token is in.
-        return math.log10(self.config['corpus_size'] / document_count)
+        """ Current formula: returns the log of total docs / docs that the token is in. """
+        return self.config['ranker']['tfIdf']['idfWeight'] * math.log10(self.config['corpus_size'] / document_count)
 
     def tf_idf(self, frequency, document_count):
-        # TODO: return the multiplication of the above two functions
+        """ Return the multiplication of the above two functions. """
         return self.tf(frequency) * self.idf(document_count)
 
     def tag_value(self, token_tags):
-        # Current formula: Given a criteria of tags, assign a score
-        # if the word has been tagged at least once given the tag.
-        # These values aren't supported by science LOL
+        """
+        Current formula: Given a criteria of tags, assign a score if the word has been tagged at least once given
+        the tag. These values aren't supported by science LOL
+        """
         tag_score = 1
         for tag in token_tags:
-            #TODO: does each tag mean something different?
-            if tag in ["b", "strong"]:
-                tag_score += 0.1
-            elif tag in ["h1", "h2"]:
-                tag_score += 0.3
-            elif tag in ["h3", "h4", "h5", "h6"]:
-                tag_score += 0.15
-            elif tag in ["title"]:
-                tag_score += 1.2
-            elif tag in ["meta"]:
-                tag_score += 0.7
+            # TODO: tune these weights in the config file.
+            if tag in self.config['ranker']['tags']:
+                tag_score += self.config['ranker']['tags'][tag]
+
         return tag_score
 
-
     def pos_value(self, document_pos):
-        # Current formula: Given token positions in a document,
-        # we need to find a fine-tuned cutoff to consider
-        # which words are early enough to have value.
+        """
+        Current formula: Given token positions in a document, we need to find a fine-tuned cutoff to consider which
+        words are early enough to have value.
+        """
         pos_score = 1
         for pos in document_pos:
-            #TODO: What is the cutoff for important positionings?
-            if pos < 100:
-                pos_score += (100-pos)/100.0
+            # TODO: Tune this value in the config file.
+            if pos < self.config['ranker']['documentPos']['cutoff']:
+                pos_score += (100 - pos) / 100.0
+
         return pos_score
 
     def rank(self, index_entries):
@@ -85,9 +78,9 @@ class Ranker:
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
                 rankings[url] = (
-                    (self.tf_idf(token_frequency, postings_count) * self.config["ranker"]["tf_idf_weight_1"])
-                    * (self.tag_value(token_tags) * self.config["ranker"]["terms_weight_2"])
-                    * (self.pos_value(token_document_pos) * self.config["ranker"]["document_pos_weight_3"])
+                    (self.tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
+                    * (self.tag_value(token_tags) * self.config['ranker']['composite']['tags'])
+                    * (self.pos_value(token_document_pos) * self.config['ranker']['composite']['documentPos'])
                 )
 
         return [x[0] for x in sorted(rankings.items(), key=lambda i: -i[1])]
@@ -208,7 +201,8 @@ class Presenter:
 
         def _display_results(self):
             """ Display the results, given our search cursor and results list."""
-            upper_bound = min(self.results_cursor + self.config['presentation']['resultsPerPage'], len(self.working_results))
+            upper_bound = min(self.results_cursor + self.config['presentation']['resultsPerPage'],
+                              len(self.working_results))
             lower_bound = self.results_cursor
             logger.info(f'Displaying results from {lower_bound} to {upper_bound}.')
 
