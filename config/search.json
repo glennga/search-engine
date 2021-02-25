@@ -4,5 +4,10 @@
     "startingWindowSize": [1280, 480],
     "resultItemFontSize": 15,
     "resultsPerPage": 25
+  },
+  "ranker": {
+    "tf_idf_weight_1": 1.0,
+    "terms_weight_2": 1.0,
+    "document_pos_weight_3": 1.0
   }
 }

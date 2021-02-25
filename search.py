@@ -34,9 +34,40 @@ class Ranker:
         # Current formula: returns the log of total docs / docs that the token is in.
         return math.log10(self.config['corpus_size'] / document_count)
 
-    def tf_idf(self, frequency, tags, document_pos, document_count):
+    def tf_idf(self, frequency, document_count):
         # TODO: return the multiplication of the above two functions
         return self.tf(frequency) * self.idf(document_count)
+
+    def tag_value(self, token_tags):
+        # Current formula: Given a criteria of tags, assign a score
+        # if the word has been tagged at least once given the tag.
+        # These values aren't supported by science LOL
+        tag_score = 1
+        for tag in token_tags:
+            #TODO: does each tag mean something different?
+            if tag in ["b", "strong"]:
+                tag_score += 0.1
+            elif tag in ["h1", "h2"]:
+                tag_score += 0.3
+            elif tag in ["h3", "h4", "h5", "h6"]:
+                tag_score += 0.15
+            elif tag in ["title"]:
+                tag_score += 1.2
+            elif tag in ["meta"]:
+                tag_score += 0.7
+        return tag_score
+
+
+    def pos_value(self, document_pos):
+        # Current formula: Given token positions in a document,
+        # we need to find a fine-tuned cutoff to consider
+        # which words are early enough to have value.
+        pos_score = 1
+        for pos in document_pos:
+            #TODO: What is the cutoff for important positionings?
+            if pos < 100:
+                pos_score += (100-pos)/100.0
+        return pos_score
 
     def rank(self, index_entries):
         """ Return an iterator of URLs in ranked order.
@@ -54,10 +85,12 @@ class Ranker:
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
                 rankings[url] = (
-                    self.tf_idf(token_frequency, token_tags, token_document_pos, postings_count)
+                    (self.tf_idf(token_frequency, postings_count) * self.config["ranker"]["tf_idf_weight_1"])
+                    * (self.tag_value(token_tags) * self.config["ranker"]["terms_weight_2"])
+                    * (self.pos_value(token_document_pos) * self.config["ranker"]["document_pos_weight_3"])
                 )
 
-        return [x[0] for x in sorted(rankings.items(), key=lambda i: i[1])]
+        return [x[0] for x in sorted(rankings.items(), key=lambda i: -i[1])]
 
 
 class Retriever:
