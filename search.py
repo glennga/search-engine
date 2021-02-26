@@ -70,6 +70,7 @@ class Ranker:
         :return: List of URLs in ranked order.
         """
         rankings = dict()  # {url: tf-idf}
+        processed_token_hashes = dict()  # {token_hash: url}, use a dict for debugging purposes.
         t_prev = time.process_time()
 
         for entry in index_entries:
@@ -79,6 +80,10 @@ class Ranker:
             for _ in range(postings_count):
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
+                if token_hash in processed_token_hashes:
+                    logger.info(f'Current URL {url} is similar to processed URL {processed_token_hashes[token_hash]}. Skipping ranking.')
+                else:
+                    processed_token_hashes[token_hash] = url # store the url for logging purposes
 
                 v1 = (self.tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
                 v2 = (self.tag_value(token_tags) * self.config['ranker']['composite']['tags'])
