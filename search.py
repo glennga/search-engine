@@ -71,6 +71,7 @@ class Ranker:
         """
         rankings = dict()  # {url: tf-idf}
         processed_token_hashes = dict()  # {token_hash: url}, use a dict for debugging purposes.
+        combined_document_pos = dict() # {url: [combined_document_pos]}
         t_prev = time.process_time()
 
         for entry in index_entries:
@@ -81,7 +82,7 @@ class Ranker:
                 # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                 url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
                 if token_hash in processed_token_hashes:
-                    logger.info(f'Current URL {url} is similar to processed URL {processed_token_hashes[token_hash]}. Skipping ranking.')
+                    logger.debug(f'Current URL {url} is similar to processed URL {processed_token_hashes[token_hash]}. Skipping ranking.')
                 else:
                     processed_token_hashes[token_hash] = url # store the url for logging purposes
 
@@ -96,9 +97,24 @@ class Ranker:
                     rankings[url] = 0
                 rankings[url] += v1 * v2 * v3
 
+                # Track the token document positionings for later
+                if url not in combined_document_pos:
+                    combined_document_pos[url] = token_document_pos
+                else:
+                    combined_document_pos[url].extend(token_document_pos)
+                    list.sort(combined_document_pos[url])
+
             t_current = time.process_time()
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_prev)}ms.')
             t_prev = t_current
+
+        # Current formula: if the tokens share document positions close to each other, increase rank
+        for url, document_pos in combined_document_pos.items():
+            for _i in range(len(document_pos)-1):
+                if abs(document_pos[_i] - document_pos[_i+1]) <= 1:
+                    logger.debug(f"{url} has potential bigrams, increase rank")
+                    rankings[url] = rankings[url] * self.config["ranker"]["documentPos"]["weight"]
+                    break
 
         return [x[0] for x in sorted(rankings.items(), key=lambda i: -i[1])]
 
