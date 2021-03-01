@@ -6,14 +6,16 @@
     "resultsPerPage": 25
   },
   "ranker": {
+    "maxPostings": 1000,
     "composite": {
       "tfIdf": 1.0,
-      "tags": 1.0,
-      "documentPos": 1.0
+      "tags": 5.0,
+      "documentPos": 5.0,
+      "urlDepth": 5.0
     },
     "tfIdf": {
       "tfWeight": 1.0,
-      "idfWeight": 1.0
+      "idfWeight": 10.0
     },
     "tags": {
       "b": 0.1,

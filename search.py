@@ -2,12 +2,14 @@ import __init__
 import argparse
 import json
 import sys
+import heapq
 import math
 import time
 import pickle
 
 # Required for pickle!
 from index import IndexDescriptor
+from urllib.parse import urlparse
 from nltk.stem import PorterStemmer
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import QApplication, QLineEdit, QPushButton, QMainWindow, QVBoxLayout, QListWidget, \
@@ -24,19 +26,19 @@ class Ranker:
     def __init__(self, **kwargs):
         self.config = kwargs
 
-    def tf(self, frequency):
+    def _tf(self, frequency):
         """ Current formula: returns the weighted token frequency. """
         return self.config['ranker']['tfIdf']['tfWeight'] * frequency
 
-    def idf(self, document_count):
+    def _idf(self, document_count):
         """ Current formula: returns the log of total docs / docs that the token is in. """
         return self.config['ranker']['tfIdf']['idfWeight'] * math.log10(self.config['corpus_size'] / document_count)
 
-    def tf_idf(self, frequency, document_count):
+    def _tf_idf(self, frequency, document_count):
         """ Return the multiplication of the above two functions. """
-        return self.tf(frequency) * self.idf(document_count)
+        return self._tf(frequency) * self._idf(document_count)
 
-    def tag_value(self, token_tags):
+    def _tag_value(self, token_tags):
         """
         Current formula: Given a criteria of tags, assign a score if the word has been tagged at least once given
         the tag. These values aren't supported by science LOL
@@ -49,18 +51,19 @@ class Ranker:
 
         return tag_score
 
-    def pos_value(self, document_pos):
-        """
-        Current formula: Given token positions in a document, we need to find a fine-tuned cutoff to consider which
-        words are early enough to have value.
-        """
-        pos_score = 1
-        for pos in document_pos:
-            # TODO: Tune this value in the config file.
-            if pos < self.config['ranker']['documentPos']['cutoff']:
-                pos_score += (100 - pos) / 100.0
+    @staticmethod
+    def _depth_value(url):
+        """ Current formula: the path length is inversely proportional to this value. """
+        return 1.0 / len(urlparse(url).path.split('/'))
 
-        return pos_score
+    def _position_values(self, combined_document_pos, rankings):
+        """ Current formula: if the tokens share document positions close to each other, increase rank. """
+        for url, document_pos in combined_document_pos.items():
+            for i in range(len(document_pos) - 1):
+                if abs(document_pos[i] - document_pos[i + 1]) <= 1:
+                    # logger.debug(f"{url} has potential bigrams, increase rank.")
+                    rankings[url] += 1.0 * self.config["ranker"]["documentPos"]["weight"]
+                    break
 
     def rank(self, index_entries):
         """ Return an iterator of URLs in ranked order.
@@ -71,52 +74,47 @@ class Ranker:
         """
         rankings = dict()  # {url: tf-idf}
         processed_token_hashes = dict()  # {token_hash: url}, use a dict for debugging purposes.
-        combined_document_pos = dict() # {url: [combined_document_pos]}
+        combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_prev = time.process_time()
 
         for entry in index_entries:
             token, postings_count, postings = entry
             logger.debug(f'Now ranking entry ({token}, {postings_count}, {postings}).')
 
-            for _ in range(postings_count):
-                # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
-                url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
-                if token_hash in processed_token_hashes:
-                    logger.debug(f'Current URL {url} is similar to processed URL {processed_token_hashes[token_hash]}. Skipping ranking.')
-                else:
-                    processed_token_hashes[token_hash] = url # store the url for logging purposes
+            for k in range(postings_count):
+                if k < self.config['ranker']['maxPostings']:
+                    # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
+                    url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
+                    if token_hash in processed_token_hashes:
+                        logger.debug(f'Current URL {url} is similar to processed URL '
+                                     f'{processed_token_hashes[token_hash]}. Skipping ranking.')
+                        continue
+                    else:
+                        processed_token_hashes[token_hash] = url  # Store the url for logging purposes.
 
-                v1 = (self.tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
-                v2 = (self.tag_value(token_tags) * self.config['ranker']['composite']['tags'])
-                v3 = (self.pos_value(token_document_pos) * self.config['ranker']['composite']['documentPos'])
-                # logger.debug(f'tf-idf value for document {url} of entry {entry} is {v1}.')
-                # logger.debug(f'Tags value for document {url} of entry {entry} is {v2}.')
-                # logger.debug(f'Position value for document {url} of entry {entry} is {v3}.')
+                    if url not in rankings:
+                        rankings[url] = 0
 
-                if url not in rankings:
-                    rankings[url] = 0
-                rankings[url] += v1 * v2 * v3
+                    v1 = (self._tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
+                    v2 = (self._tag_value(token_tags) * self.config['ranker']['composite']['tags'])
+                    v3 = (self._depth_value(url) * self.config['ranker']['composite']['urlDepth'])
+                    # logger.debug(f'tf-idf value for document {url} of entry {entry} is {v1}.')
+                    # logger.debug(f'Tags value for document {url} of entry {entry} is {v2}.')
+                    # logger.debug(f'Depth value for document {url} of entry {entry} is {v3}.')
+                    rankings[url] += v1 * v2 * v3
 
-                # Track the token document positionings for later
-                if url not in combined_document_pos:
-                    combined_document_pos[url] = token_document_pos
-                else:
-                    combined_document_pos[url].extend(token_document_pos)
-                    list.sort(combined_document_pos[url])
+                    # Track the token document positions for later.
+                    if url not in combined_document_pos:
+                        combined_document_pos[url] = token_document_pos
+                    else:
+                        combined_document_pos[url] = heapq.merge(combined_document_pos[url], token_document_pos)
 
             t_current = time.process_time()
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_prev)}ms.')
             t_prev = t_current
 
-        # Current formula: if the tokens share document positions close to each other, increase rank
-        for url, document_pos in combined_document_pos.items():
-            for _i in range(len(document_pos)-1):
-                if abs(document_pos[_i] - document_pos[_i+1]) <= 1:
-                    logger.debug(f"{url} has potential bigrams, increase rank")
-                    rankings[url] = rankings[url] * self.config["ranker"]["documentPos"]["weight"]
-                    break
-
-        return [x[0] for x in sorted(rankings.items(), key=lambda i: -i[1])]
+        self._position_values(combined_document_pos, rankings)
+        return sorted(rankings.items(), key=lambda j: j[1], reverse=True)
 
 
 class Retriever:
@@ -260,8 +258,8 @@ class Presenter:
             self.view.results_label.setText(f'{lower_bound + 1} to {upper_bound} results displayed.')
             self.view.results_list.clear()
             for i, url in enumerate(self.working_results[lower_bound:upper_bound]):
-                logger.debug(f'Adding result URL {url} to display.')
-                self.view.add_result(url, i + lower_bound + 1)
+                logger.debug(f'Adding result URL {url[0]} of score {url[1]} to display.')
+                self.view.add_result(url[0], i + lower_bound + 1)
 
         def _prev_action(self):
             logger.info('"Previous Page" button clicked.')
