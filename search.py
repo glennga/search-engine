@@ -147,20 +147,27 @@ class Retriever:
         """ Given a list of search terms in args, return a list of URLs.
 
         1) For each search term, perform porter stemming. This is the same stemming used for our index.
-        2) Search our descriptor (skip list) for the now stemmed word.
-        3) Move to the designated position in our index file.
-        4) Begin a rightward search until we find our stemmed word. If the token we are currently on is less than
+        2) Avoid duplicates. Keep track of the terms we currently search for in the word set.
+        3) Search our descriptor (skip list) for the now stemmed word.
+        4) Move to the designated position in our index file.
+        5) Begin a rightward search until we find our stemmed word. If the token we are currently on is less than
            our stemmed word, we continue the search. Otherwise, the word does not exist in our index.
-        5) For each word that we find, add the (token, postings count, postings iterator) to a list we will give to
+        6) For each word that we find, add the (token, postings count, postings iterator) to a list we will give to
            our ranker.
-        6) Feed this list to our ranker, and return its results.
+        7) Feed this list to our ranker, and return its results.
         """
         logger.info(f'Retrieval has been invoked.')
         ranking_input = list()
+        word_set = set()
 
         t0 = time.process_time()
         for search_term in args:
             normalized_word = self.porter.stem(search_term.lower())
+            if normalized_word in word_set:
+                continue
+            else:
+                word_set.add(normalized_word)
+
             designated_tell = self.descriptor[normalized_word]
             if designated_tell is None:
                 logger.info(f'Could not find larger entry in index, starting from position {0}.')
