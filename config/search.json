@@ -6,7 +6,9 @@
     "resultsPerPage": 25
   },
   "ranker": {
-    "maxPostings": 1000,
+    "maximumSearchTime": 0.3,
+    "minimumTimePerEntry": 0.05,
+    "maxPostings": 5000,
     "composite": {
       "tfIdf": 1.0,
       "tags": 5.0,

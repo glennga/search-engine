@@ -77,15 +77,18 @@ class Ranker:
         """
         rankings = dict()  # {url: ranking value}
         combined_document_pos = dict()  # {url: [combined_document_pos]}
-        t_prev = time.process_time()
+        t_entry_prev = time.process_time()
+        allocated_search_time = min((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
+                                    self.config['ranker']['minimumTimePerEntry'])
 
-        for entry in index_entries:
+        for k, entry in enumerate(index_entries):
             token, postings_count, postings = entry
             logger.debug(f'Now ranking entry ({token}, {postings_count}, {postings}).')
             processed_token_hashes = dict()   # {token_hash: url}, use a dict for debugging purposes.
 
-            for k in range(postings_count):
-                if k < self.config['ranker']['maxPostings']:
+            for p in range(postings_count):
+                if time.process_time() < t_entry_prev + allocated_search_time and \
+                        p < self.config['ranker']['maxPostings']:
                     # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
                     url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
                     if token_hash in processed_token_hashes:
@@ -122,9 +125,13 @@ class Ranker:
                     else:
                         combined_document_pos[url] = list(heapq.merge(combined_document_pos[url], token_document_pos))
 
+                else:
+                    logger.info(f'Timing out. Processed {p} number of postings.')
+                    break
+
             t_current = time.process_time()
-            logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_prev)}ms.')
-            t_prev = t_current
+            logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
+            t_entry_prev = t_current
 
         self._position_values(combined_document_pos, rankings)
         return sorted(rankings.items(), key=lambda j: j[1], reverse=True)
