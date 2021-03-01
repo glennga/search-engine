@@ -91,6 +91,14 @@ class Ranker:
                     if token_hash in processed_token_hashes:
                         logger.debug(f'Current URL {url} is similar to processed URL '
                                      f'{processed_token_hashes[token_hash]}. Skipping ranking.')
+                        if self._depth_value(url) > self._depth_value(processed_token_hashes[token_hash]):
+                            logger.debug(f'Depth value of current URL is smaller, so we are going to assume the URL '
+                                         f'{url}.')
+                            rankings[url] = rankings[processed_token_hashes[token_hash]]
+                            del rankings[processed_token_hashes[token_hash]]
+                            del processed_token_hashes[token_hash]
+                            processed_token_hashes[token_hash] = url
+
                         continue
                     else:
                         processed_token_hashes[token_hash] = url  # Store the url for logging purposes.
