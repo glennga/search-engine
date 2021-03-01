@@ -59,6 +59,9 @@ class Ranker:
     def _position_values(self, combined_document_pos, rankings):
         """ Current formula: if the tokens share document positions close to each other, increase rank. """
         for url, document_pos in combined_document_pos.items():
+            if len(document_pos) <= 1:
+                break
+
             for i in range(len(document_pos) - 1):
                 if abs(document_pos[i] - document_pos[i + 1]) <= 1:
                     # logger.debug(f"{url} has potential bigrams, increase rank.")
@@ -72,14 +75,14 @@ class Ranker:
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
         :return: List of URLs in ranked order.
         """
-        rankings = dict()  # {url: tf-idf}
-        processed_token_hashes = dict()  # {token_hash: url}, use a dict for debugging purposes.
+        rankings = dict()  # {url: ranking value}
         combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_prev = time.process_time()
 
         for entry in index_entries:
             token, postings_count, postings = entry
             logger.debug(f'Now ranking entry ({token}, {postings_count}, {postings}).')
+            processed_token_hashes = dict()   # {token_hash: url}, use a dict for debugging purposes.
 
             for k in range(postings_count):
                 if k < self.config['ranker']['maxPostings']:
@@ -107,7 +110,7 @@ class Ranker:
                     if url not in combined_document_pos:
                         combined_document_pos[url] = token_document_pos
                     else:
-                        combined_document_pos[url] = heapq.merge(combined_document_pos[url], token_document_pos)
+                        combined_document_pos[url] = list(heapq.merge(combined_document_pos[url], token_document_pos))
 
             t_current = time.process_time()
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_prev)}ms.')
