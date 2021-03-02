@@ -6,6 +6,8 @@ import heapq
 import math
 import time
 import pickle
+import itertools
+import operator
 
 # Required for pickle!
 from index import IndexDescriptor
@@ -57,11 +59,25 @@ class Ranker:
         """ Current formula: the path length is inversely proportional to this value. """
         return 1.0 / len(urlparse(url).path.split('/'))
 
-    def _position_values(self, combined_document_pos, rankings):
+    def _full_query_boost(self, combined_document_pos, rankings, search_length):
+        """ Current formula: If we find a contiguous sequence of {search_length} positions, increase rank. """
+        if search_length == 1:
+            return
+
+        for url, document_pos in combined_document_pos.items():
+            if len(document_pos) < search_length:
+                continue
+
+            for _, g in itertools.groupby(enumerate(document_pos), lambda a: a[0] - a[1]):
+                consecutive_grouping = list(map(operator.itemgetter(1), g))
+                if len(consecutive_grouping) >= search_length:
+                    rankings[url] += 1.0 * self.config["ranker"]["documentPos"]["weight"]
+
+    def _bigram_boost(self, combined_document_pos, rankings):
         """ Current formula: if the tokens share document positions close to each other, increase rank. """
         for url, document_pos in combined_document_pos.items():
             if len(document_pos) <= 1:
-                break
+                continue
 
             for i in range(len(document_pos) - 1):
                 if abs(document_pos[i] - document_pos[i + 1]) <= 1:
@@ -133,7 +149,7 @@ class Ranker:
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
             t_entry_prev = t_current
 
-        self._position_values(combined_document_pos, rankings)
+        self._full_query_boost(combined_document_pos, rankings, len(index_entries))
         return sorted(rankings.items(), key=lambda j: j[1], reverse=True)
 
 
