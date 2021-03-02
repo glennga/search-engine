@@ -26,13 +26,14 @@ class Ranker:
     def __init__(self, **kwargs):
         self.config = kwargs
 
-    def _tf(self, frequency):
-        """ Current formula: returns the weighted token frequency. """
-        return self.config['ranker']['tfIdf']['tfWeight'] * frequency
+    @staticmethod
+    def _tf(frequency):
+        """ Current formula: returns the token frequency. """
+        return frequency
 
     def _idf(self, document_count):
         """ Current formula: returns the log of total docs / docs that the token is in. """
-        return self.config['ranker']['tfIdf']['idfWeight'] * math.log10(self.config['corpus_size'] / document_count)
+        return math.log10(self.config['corpus_size'] / document_count)
 
     def _tf_idf(self, frequency, document_count):
         """ Return the multiplication of the above two functions. """
@@ -78,13 +79,13 @@ class Ranker:
         rankings = dict()  # {url: ranking value}
         combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_entry_prev = time.process_time()
-        allocated_search_time = min((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
+        allocated_search_time = max((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
                                     self.config['ranker']['minimumTimePerEntry'])
 
         for k, entry in enumerate(index_entries):
             token, postings_count, postings = entry
             logger.debug(f'Now ranking entry ({token}, {postings_count}, {postings}).')
-            processed_token_hashes = dict()   # {token_hash: url}, use a dict for debugging purposes.
+            processed_token_hashes = dict()   # {token_hash: url}
 
             for p in range(postings_count):
                 if time.process_time() < t_entry_prev + allocated_search_time and \
@@ -103,10 +104,9 @@ class Ranker:
                             del rankings[processed_token_hashes[token_hash]]
                             del processed_token_hashes[token_hash]
                             processed_token_hashes[token_hash] = url
-
                         continue
                     else:
-                        processed_token_hashes[token_hash] = url  # Store the url for logging purposes.
+                        processed_token_hashes[token_hash] = url
 
                     if url not in rankings:
                         rankings[url] = 0
