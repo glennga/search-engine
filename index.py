@@ -333,7 +333,7 @@ class StorageHandler:
 
         while len(self.merge_queue) > 1 or len(self.memory_component) != 0:
             merge_level = min(int(re.search(r'.*/d([0-9]).*', f).group(1)) for f in self.merge_queue) + 1
-            run_file = f'd{merge_level}_' + str(datetime.datetime.now().isoformat()) + '.comp'
+            run_file = f'd{merge_level}_' + str(uuid.uuid4()) + '.comp'
             logger.info(f'Starting merge to generate file {run_file}.')
 
             if len(self.memory_component) > 0:
@@ -536,10 +536,11 @@ class Indexer:
 
                 logger.info(f"Tokenizing file {file.name}, in path {'/'.join(file.parts[1:])}.")
                 tokens, url, token_hash = self.tokenizer.tokenize(file)
+                document_length = sum(t.frequency for t in tokens)
                 document_count += 1
 
                 for token in tokens:
-                    entry = (url, token.frequency, token.tags, token.document_pos, token_hash, )
+                    entry = (url, token.frequency / document_length, token.tags, token.document_pos, token_hash, )
                     logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
                     self.storage_handler.write(token.token, entry)
 
