@@ -67,7 +67,7 @@ class Ranker:
 
     def _tf_idf(self, frequency, document_count):
         """ Return the multiplication of the above two functions. """
-        return self._tf(frequency) * self._idf(document_count)
+        return self.config['ranker']['composite']['tfIdf'] * self._tf(frequency) * self._idf(document_count)
 
     def _tag_value(self, token_tags):
         """
@@ -79,12 +79,11 @@ class Ranker:
             if tag in self.config['ranker']['tags']:
                 tag_score += self.config['ranker']['tags'][tag]
 
-        return tag_score
+        return self.config['ranker']['composite']['tags'] * tag_score
 
-    @staticmethod
-    def _depth_value(url):
+    def _depth_value(self, url):
         """ Current formula: the path length is inversely proportional to this value. """
-        return 1.0 / len(urlparse(url).path.split('/'))
+        return self.config['ranker']['composite']['urlDepth'] * 1.0 / len(urlparse(url).path.split('/'))
 
     def _ngram_boost(self, combined_document_pos, search_length, tolerance):
         """ Current formula: If we find a contiguous sequence of {search_length} positions, increase rank. """
@@ -101,9 +100,9 @@ class Ranker:
                 self.flag = 1
 
             def __call__(self, *args, **kwargs):
-                if self.prev and abs(self.prev - args[0][1]) > tolerance:
+                if self.prev and abs(self.prev - args[0][1][0]) > tolerance:
                     self.flag *= -1  # Create a new group!
-                self.prev = args[0][1]
+                self.prev = args[0][1][0]
                 return self.flag
 
         for url, document_pos in combined_document_pos.items():
@@ -112,7 +111,7 @@ class Ranker:
 
             for _, g in itertools.groupby(enumerate(document_pos), GroupByKey()):
                 consecutive_grouping = list(map(operator.itemgetter(1), g))
-                if len(consecutive_grouping) >= search_length:
+                if len(set(c[1] for c in consecutive_grouping)) >= search_length:
                     self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
 
     def _bigram_boost(self, combined_document_pos):
@@ -176,19 +175,17 @@ class Ranker:
                     processed_token_hashes[token_hash] = url
 
                 self.ranking_handler.pre_augment(url)
-                v1 = (self._tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
-                v2 = (self._tag_value(token_tags) * self.config['ranker']['composite']['tags'])
-                v3 = (self._depth_value(url) * self.config['ranker']['composite']['urlDepth'])
-                self.ranking_handler.augment(url, 0, v1)
-                self.ranking_handler.augment(url, 0, v2)
-                self.ranking_handler.augment(url, 0, v3)
+                self.ranking_handler.augment(url, 0, self._tf_idf(token_frequency, postings_count))
+                self.ranking_handler.augment(url, 1, self._tag_value(token_tags))
+                self.ranking_handler.augment(url, 2, self._depth_value(url))
 
                 # Track the token document positions for later.
-                combined_document_pos[url] = token_document_pos if url not in combined_document_pos else \
-                    list(heapq.merge(combined_document_pos[url], token_document_pos))
+                new_document_pos = list((d, k) for d in token_document_pos)
+                combined_document_pos[url] = new_document_pos if url not in combined_document_pos else \
+                    list(heapq.merge(combined_document_pos[url], new_document_pos, key=lambda a: a[0]))
 
             t_current = time.process_time()
-            logger.info(f'Processed {p} number of postings.')
+            logger.info(f'Processed {p + 1} number of postings.')
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
             t_entry_prev = t_current
 
