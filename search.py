@@ -225,7 +225,7 @@ class Ranker:
         :param pos_tolerance: Number of words stopped from the query, which specifies a tolerance for the ngram booster.
         :return: List of URLs in ranked order.
         """
-        if len(index_entries) == 1:
+        if len(index_entries) < 1:
             return self.disjunctive_rank(index_entries, pos_tolerance)
 
         self.ranking_handler.reset()
@@ -240,20 +240,17 @@ class Ranker:
                         try:
                             self.ranking_handler.remove(u)  # TODO: There's a key error here...
                         except KeyError as e:  # Maybe the document is already not in here
-                            logger.error(f"The duplicate document {u} is not in our ranking handler, continue.")
+                            logger.error(f"Duplicate document {u} is not in our ranking handler!")
                         try:
                             del combined_document_pos[u]  # TODO: There's a key error here...
                         except KeyError as e: # Maybe the document is already not in here
-                            logger.error(f"The duplicate document {u} is not in our combined document positions list, continue.")
-            # self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+                            logger.error(f"Duplicate document {u} is not in our combined document positions list!")
+            self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
             return self.ranking_handler()
-
 
         # First, get our sorted index entries.
         sorted_entries = sorted(index_entries, key=lambda i: i[1])
-        # If the sorted entries list is empty, just return.
-        if len(sorted_entries) == 0:
-            return _finish_ranking()
+
         # We process the entry with the least cardinality first.
         token_left, countp_left, postings_left = sorted_entries[0]
         token_right, countp_right, postings_right = sorted_entries[1]
