@@ -86,21 +86,36 @@ class Ranker:
         """ Current formula: the path length is inversely proportional to this value. """
         return 1.0 / len(urlparse(url).path.split('/'))
 
-    def _full_query_boost(self, combined_document_pos, rankings, search_length):
+    def _ngram_boost(self, combined_document_pos, search_length, tolerance):
         """ Current formula: If we find a contiguous sequence of {search_length} positions, increase rank. """
         if search_length == 1:
             return
+
+        class GroupByKey:
+            """
+            For use with itertools.groupby. We basically create a new group when the difference between elements is
+            greater than some threshold.
+            """
+            def __init__(self):
+                self.prev = None
+                self.flag = 1
+
+            def __call__(self, *args, **kwargs):
+                if self.prev and abs(self.prev - args[0][1]) > tolerance:
+                    self.flag *= -1  # Create a new group!
+                self.prev = args[0][1]
+                return self.flag
 
         for url, document_pos in combined_document_pos.items():
             if len(document_pos) < search_length:
                 continue
 
-            for _, g in itertools.groupby(enumerate(document_pos), lambda a: a[0] - a[1]):
+            for _, g in itertools.groupby(enumerate(document_pos), GroupByKey()):
                 consecutive_grouping = list(map(operator.itemgetter(1), g))
                 if len(consecutive_grouping) >= search_length:
                     self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
 
-    def _bigram_boost(self, combined_document_pos, rankings):
+    def _bigram_boost(self, combined_document_pos):
         """ Current formula: if the tokens share document positions close to each other, increase rank. """
         for url, document_pos in combined_document_pos.items():
             if len(document_pos) <= 1:
@@ -112,18 +127,26 @@ class Ranker:
                     self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
                     break
 
-    def rank(self, index_entries):
-        """ Return an iterator of URLs in ranked order.
+    def rank(self, index_entries, pos_tolerance):
+        """ Return a list of URLs in ranked order.
+
+        1. Ensure that the search time is under some threshold (defined in our config file). This is accomplished by
+           allocating search time to each query term (but allow unused time to spill over to other terms).
+        2.
 
         :param index_entries: List of lists of token, document count, and iterator of postings.
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
+        :param pos_tolerance: Number of words stopped from the query, which specifies a tolerance for the ngram booster.
         :return: List of URLs in ranked order.
         """
         self.ranking_handler.reset()
         combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_entry_prev = time.process_time()
-        allocated_search_time = max((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
-                                    self.config['ranker']['minimumTimePerEntry'])
+        allocated_search_time = [
+            t_entry_prev + max((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
+                               self.config['ranker']['minimumTimePerEntry']) * i
+            for i in range(1, len(index_entries) + 1)
+        ]
 
         for k, entry in enumerate(index_entries):
             token, postings_count, postings = entry
@@ -160,17 +183,12 @@ class Ranker:
                 self.ranking_handler.augment(url, 0, v2)
                 self.ranking_handler.augment(url, 0, v3)
 
-                    # Track the token document positions for later.
-                    if url not in combined_document_pos:
-                        combined_document_pos[url] = token_document_pos
-                    else:
-                        combined_document_pos[url] = list(heapq.merge(combined_document_pos[url], token_document_pos))
-
-                else:
-                    logger.info(f'Timing out. Processed {p} number of postings.')
-                    break
+                # Track the token document positions for later.
+                combined_document_pos[url] = token_document_pos if url not in combined_document_pos else \
+                    list(heapq.merge(combined_document_pos[url], token_document_pos))
 
             t_current = time.process_time()
+            logger.info(f'Processed {p} number of postings.')
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
             t_entry_prev = t_current
 
@@ -193,6 +211,18 @@ class Retriever:
         self.porter = PorterStemmer()
         self.ranker = Ranker(corpus_size=self.descriptor.get_metadata()['corpusSize'], **kwargs)
 
+        # We perform stopping at the query layer.
+        self.stop_words = set([
+            self.porter.stem(w) for w in
+            'a,able,about,across,after,all,almost,also,am,among,an,and,any,are,as,at,be,because,been,'
+            'but,by,can,cannot,could,dear,did,do,does,either,else,ever,every,for,from,get,got,had,has,'
+            'have,he,her,hers,him,his,how,however,i,if,in,into,is,it,its,just,least,let,like,likely,'
+            'may,me,might,most,must,my,neither,no,nor,not,of,off,often,on,only,or,other,our,own,rather,'
+            'said,say,says,she,should,since,so,some,than,that,the,their,them,then,there,these,they,'
+            'this,tis,to,too,twas,us,wants,was,we,were,what,when,where,which,while,who,whom,why,will,'
+            'with,would,yet,you,your'.split(',')
+        ])
+
     def __call__(self, *args, **kwargs):
         """ Given a list of search terms in args, return a list of URLs.
 
@@ -210,15 +240,20 @@ class Retriever:
         ranking_input = list()
         word_set = set()
 
-        t0 = time.process_time()
-        for search_term in args:
-            normalized_word = self.porter.stem(search_term.lower())
-            if normalized_word in word_set:
+        t0 = time.process_time()  # Perform stopping.
+        original_search_terms = [self.porter.stem(w.lower()) for w in args]
+        if not all(w in self.stop_words for w in original_search_terms):
+            stopped_search_terms = [w for w in original_search_terms if w not in self.stop_words]
+        else:
+            stopped_search_terms = original_search_terms
+
+        for search_term in stopped_search_terms:
+            if search_term in word_set:
                 continue
             else:
-                word_set.add(normalized_word)
+                word_set.add(search_term)
 
-            designated_tell = self.descriptor[normalized_word]
+            designated_tell = self.descriptor[search_term]
             if designated_tell is None:
                 logger.info(f'Could not find larger entry in index, starting from position {0}.')
                 designated_tell = 0
@@ -231,11 +266,11 @@ class Retriever:
             try:
                 while True:
                     token, postings_count = next(search_generator)
-                    if token == normalized_word:
-                        logger.info(f'Word {normalized_word} ({search_term}) found!')
+                    if token == search_term:
+                        logger.info(f'Word {search_term} found!')
                         ranking_input.append((token, postings_count, search_generator))
                         break
-                    elif token < normalized_word:
+                    elif token < search_term:
                         logger.debug(f'Searching... Skipping over word {token}.')
                         [next(search_generator) for _ in range(postings_count)]
                     else:
@@ -247,7 +282,7 @@ class Retriever:
 
         t1 = time.process_time()
         logger.info(f'Time to search words in skip list: {1000.0 * (t1 - t0)}ms.')
-        ranking_output = self.ranker.rank(ranking_input)
+        ranking_output = self.ranker.rank(ranking_input, len(original_search_terms) - len(stopped_search_terms))
 
         t2 = time.process_time()
         logger.info(f'Time to fetch results + perform ranking: {1000.0 * (t2 - t1)}ms.')
@@ -326,7 +361,7 @@ class Presenter:
             self.view.results_label.setText(f'{lower_bound + 1} to {upper_bound} results displayed.')
             self.view.results_list.clear()
             for i, url in enumerate(self.working_results[lower_bound:upper_bound]):
-                logger.debug(f'Adding result URL {url[0]} of score {url[1]} to display.')
+                logger.debug(f'Adding result URL {url[0]} of score(s) {url[1]} to display.')
                 self.view.add_result(url[0], i + lower_bound + 1)
 
         def _prev_action(self):
