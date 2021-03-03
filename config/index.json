@@ -1,10 +1,17 @@
 {
   "storage": {
+    "vocab": {
+      "skipProbability": 0.5,
+      "l1Probability": 1.0,
+      "maxSkipHeight": 20
+    },
+    "posting": {
+      "skipProbability": 0.5,
+      "l1Probability": 1.0,
+      "maxSkipHeight": 20
+    },
     "spillThreshold": 1000000,
     "spillDirectory": "out/spill",
-    "dataDirectory": "out/data",
-    "skipProbability": 0.5,
-    "l1Probability": 1.0,
-    "maxSkipHeight": 20
+    "dataDirectory": "out/data"
   }
 }
