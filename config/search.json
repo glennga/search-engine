@@ -3,21 +3,16 @@
     "startingText": "Type in your query and hit search!",
     "startingWindowSize": [1280, 480],
     "resultItemFontSize": 15,
-    "resultsPerPage": 25
+    "resultsPerPage": 15
   },
   "ranker": {
     "maximumSearchTime": 0.3,
     "minimumTimePerEntry": 0.05,
-    "maxPostings": 5000,
+    "maxPostings": -1,
     "composite": {
-      "tfIdf": 1.0,
+      "tfIdf": 50.0,
       "tags": 5.0,
-      "documentPos": 5.0,
       "urlDepth": 5.0
-    },
-    "tfIdf": {
-      "tfWeight": 1.0,
-      "idfWeight": 10.0
     },
     "tags": {
       "b": 0.1,
@@ -32,8 +27,7 @@
       "meta": 0.7
     },
     "documentPos": {
-      "cutoff": 100,
-      "weight": 1000
+      "weight": 10.0
     }
   }
 }

@@ -63,6 +63,12 @@ class Ranker:
         self.ranking_handler = self.RankingHandler(True)
         self.config = kwargs
 
+        # If any of these settings are negative, then we assume the unbounded case.
+        if self.config['ranker']['maxPostings'] < 0:
+            self.config['ranker']['maxPostings'] = math.inf
+        if self.config['ranker']['maximumSearchTime'] < 0:
+            self.config['ranker']['maximumSearchTime'] = math.inf
+
     @staticmethod
     def _tf(frequency):
         """ Current formula: returns the token frequency. """
