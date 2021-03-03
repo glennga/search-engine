@@ -186,7 +186,7 @@ class IndexDescriptor:
             while current_node.look_right().token != self.END_TOKEN and current_node.look_right().token < item:
                 current_node = current_node.look_right()
 
-        return current_node.tell
+        return current_node.look_right().tell
 
     def get_metadata(self):
         """ Return everything about the index (except the skip list itself). """
