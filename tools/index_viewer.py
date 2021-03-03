@@ -3,7 +3,7 @@ import pickle
 import time
 
 # Required for pickle!
-from index import IndexDescriptor
+from index import IndexDescriptor, SkipList
 
 
 def _generator_file(in_fp):
@@ -34,6 +34,7 @@ def _search(in_fp, in_desc, word):
     try:
         while True:
             token, postings_count = next(search_generator)
+            next(search_generator)  # Skip over the posting skip list.
             if token == word:
                 return next(search_generator)
             else:
@@ -49,6 +50,7 @@ if __name__ == '__main__':
     parser.add_argument('index', type=str, help='Location of the index file to read.')
     parser.add_argument('desc', type=str, help='Location of the descriptor file to read.')
     parser.add_argument('--word', type=str, default=None, help='Word to search using the index.')
+    parser.add_argument('--url', type=str, default=None, help='URL to search for in some posting.')
     command_line_args = parser.parse_args()
 
     with open(command_line_args.index, 'rb') as index_fp, open(command_line_args.desc, 'rb') as desc_fp:
@@ -63,8 +65,11 @@ if __name__ == '__main__':
             try:
                 while True:
                     m_token, m_postings_count = next(m_generator)
-                    print(f'({m_token}, {m_postings_count}) : [{next(m_generator)}]')
-                    for _ in range(m_postings_count - 1):
+                    m_skip_list = next(m_generator)
+                    print(f'Working entry: ({m_token}, {m_postings_count})')
+                    print(f'Working tell: {index_fp.tell()}')
+                    print(f'Skip list for the associated posting:\n{m_skip_list}')
+                    for _ in range(m_postings_count):
                         next(m_generator)
 
                     if not m_token.isdigit():

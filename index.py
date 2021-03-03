@@ -10,6 +10,7 @@ import heapq
 import random
 import uuid
 import hashlib
+import tempfile
 
 from lxml import etree, html
 from pathlib import Path
@@ -182,6 +183,35 @@ class SkipList:
 
         return current_node.look_right().tell
 
+    def __str__(self):
+        def _exhaust_sll(node):
+            resultant = ''
+            while node.look_right().label != self.END_LABEL:
+                node = node.look_right()
+                resultant += f'({node.label}, {node.tell}) -- '
+            return resultant
+
+        complete_string = ''
+        current_left_node = self.sentinel
+        while current_left_node.look_down() is not None:
+            current_left_node = current_left_node.look_down()
+            partial_string = self.START_LABEL + ' -- ' + _exhaust_sll(current_left_node) + self.END_LABEL
+            complete_string += partial_string + f'\n|{"".join("-" for _ in range(len(partial_string) - 2))}|\n'
+
+        return complete_string
+
+    def augment(self, augment_f):
+        """ Augment each node's tell in an already built skip list. """
+        def _exhaust_sll(node):
+            while node.look_right().label != self.END_LABEL:
+                node = node.look_right()
+                node.tell = augment_f(node.tell)
+
+        current_left_node = self.sentinel
+        while current_left_node.look_down() is not None:
+            current_left_node = current_left_node.look_down()
+            _exhaust_sll(current_left_node)
+
     @staticmethod
     def _link_nodes(node_list):
         """ Construct a SLL given an ordered list of nodes. We return the first node in this sequence. """
@@ -341,7 +371,7 @@ class StorageHandler:
         """
         if len(self.merge_queue) == 0:
             logger.info('No disk components found. Writing in-memory component to disk.')
-            l1_token_tells = self._spill(True)
+            l1_labels = self._spill(True)
 
         while len(self.merge_queue) > 1 or len(self.memory_component) != 0:
             merge_level = min(int(re.search(r'.*/d([0-9]).*', f).group(1)) for f in self.merge_queue) + 1
@@ -354,7 +384,7 @@ class StorageHandler:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
                     left_component = self._generator_dict(self.memory_component, lambda k: k[0])
                     right_component = self._generator_file(right_fp)
-                    l1_token_tells = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
+                    l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
                     self.memory_component.clear()
 
             else:
@@ -364,7 +394,7 @@ class StorageHandler:
                     logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
                     left_component = self._generator_file(left_fp)
                     right_component = self._generator_file(right_fp)
-                    l1_token_tells = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
+                    l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
 
             self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + run_file)
 
@@ -377,7 +407,7 @@ class StorageHandler:
         descriptor_file = re.search(r'(.*).idx', data_file).group(1) + '.desc'
         with open(self.config['storage']['dataDirectory'] + '/' + descriptor_file, 'wb') as descriptor_fp:
             logger.info(f'Writing descriptor file {descriptor_file}.')
-            pickle.dump(IndexDescriptor(l1_token_tells, **self.config), descriptor_fp)
+            pickle.dump(IndexDescriptor(l1_labels, **self.config), descriptor_fp)
 
         return data_file, descriptor_file
 
@@ -394,23 +424,22 @@ class StorageHandler:
         """
         spill_file = 'd0_' + str(uuid.uuid4()) + '.comp'
         logger.info(f'Spilling component {spill_file} to disk.')
-        l1_token_tells = list()
+        l1_labels = list()
 
         with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as out_fp:
             ordered_memory_component = sorted(self.memory_component.items(), key=lambda k: k[0])
             for token, postings in ordered_memory_component:
                 if is_last_spill and random.random() < self.config['storage']['vocab']['l1Probability']:
-                    logger.debug(f'Adding {(token, out_fp.tell(),)} to L1 layer of skip list.')
-                    l1_token_tells.append((token, out_fp.tell(),))
+                    logger.debug(f'Adding {(token, out_fp.tell(),)} to L1 layer of vocab skip list.')
+                    l1_labels.append((token, out_fp.tell(),))
 
                 logger.debug(f'Writing token {token} with {len(postings)} postings to disk.')
                 pickle.dump((token, len(postings)), out_fp)
-                for posting in postings:
-                    pickle.dump(posting, out_fp)
+                self._post(postings, out_fp, is_last_spill)
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
-        return l1_token_tells
+        return l1_labels
 
     def _merge(self, left_component, right_component, is_last_merge, out_fp):
         """ Merge the two components together in a "merge-join" fashion, writing to the given file pointer.
@@ -453,15 +482,14 @@ class StorageHandler:
         def _write(token, posting_count, postings):
             """ Write the inverted list to our file pointer. """
             if is_last_merge and random.random() < self.config['storage']['vocab']['l1Probability']:
-                logger.debug(f'Adding {(token, out_fp.tell(), )} to L1 layer of skip list.')
-                l1_token_tells.append((token, out_fp.tell(), ))
+                logger.debug(f'Adding {(token, out_fp.tell(), )} to L1 layer of vocab skip list.')
+                l1_labels.append((token, out_fp.tell(), ))
 
             logger.debug(f'Writing token {token} with {posting_count} postings to disk.')
             pickle.dump((token, posting_count), out_fp)
-            for posting in postings:
-                pickle.dump(posting, out_fp)
+            self._post(postings, out_fp, is_last_merge)
 
-        l1_token_tells = list()
+        l1_labels = list()
         left_token, left_posting_count, is_left_exhausted = _advance(left_component)
         right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
@@ -495,7 +523,61 @@ class StorageHandler:
             else:  # is_left_exhausted and is_right_exhausted
                 break
 
-        return l1_token_tells
+        return l1_labels
+
+    def _post(self, postings, out_fp, is_last_run):
+        """ Dump our postings to disk. If this is the last run, then build the associated skip list as well.
+
+        1. If this is an intermediate run, do not build our skip list. Simply write our postings list to disk.
+        2. Otherwise, we must build our skip list. We first perform a "first-pass", which will consist find the offsets
+           associated with each sampled posting. We determine this by writing to a temporary file.
+        3. Determine the starting position for each label. Because our how we are serializing our data (and the fact
+           that integers aren't fixed width), we need to perform this in an iterative manner until we are sure that
+           this starting position doesn't change (i.e. a fixed point algorithm here).
+        4. Finally, write the skip list and our postings to disk.
+
+        """
+        if not is_last_run:
+            for posting in postings:
+                pickle.dump(posting, out_fp)
+            return
+
+        l1_labels = list()
+        with tempfile.TemporaryFile() as tmp_fp:
+            logger.debug('Performing first pass of writing postings to disk.')
+            for posting in postings:
+                if random.random() < self.config['storage']['posting']['l1Probability']:
+                    l1_label = self.postings_f(posting)  # This depends on how our postings list is sorted.
+                    logger.debug(f'Adding {(l1_label, tmp_fp.tell(),)} to L1 layer of postings skip list.')
+                    l1_labels.append((l1_label, tmp_fp.tell(), ))
+                pickle.dump(posting, tmp_fp)
+
+            logger.debug('Performing second pass of writing postings to disk.')
+            posting_skip_list = SkipList(
+                l1_labels, skip_probability=self.config['storage']['posting']['skipProbability'],
+                l1_probability=self.config['storage']['posting']['l1Probability'],
+                max_skip_height=self.config['storage']['posting']['maxSkipHeight']
+            )
+
+            # Note: this is messy as hell, but should work well enough...
+            starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
+            posting_skip_list.augment(lambda a: a + starting_position)
+            next_starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
+            while starting_position != next_starting_position:
+                posting_skip_list.augment(lambda a: a + next_starting_position - starting_position)
+                starting_position = next_starting_position
+                next_starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
+
+            logger.debug('Now writing our skip list and postings to the given file.')
+            pickle.dump(posting_skip_list, out_fp)
+            tmp_fp.seek(0)
+            tmp_entries = self._generator_file(tmp_fp)
+            while True:
+                try:
+                    posting = next(tmp_entries)
+                    pickle.dump(posting, out_fp)
+                except StopIteration:
+                    break
 
     @staticmethod
     def _generator_dict(in_dict, entry_f):

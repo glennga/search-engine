@@ -10,7 +10,7 @@
       "l1Probability": 1.0,
       "maxSkipHeight": 20
     },
-    "spillThreshold": 1000000,
+    "spillThreshold": 100000,
     "spillDirectory": "out/spill",
     "dataDirectory": "out/data"
   }
