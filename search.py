@@ -42,9 +42,16 @@ class Ranker:
             else:
                 self.rankings[url][i] += v
 
+        def remove(self, url):
+            if url in self.rankings:
+                del self.rankings[url]
+
         def replace(self, old_url, new_url):
             self.rankings[new_url] = self.rankings[old_url]
-            del self.rankings[old_url]
+            self.remove(old_url)
+
+        def contains(self, url):
+            return url in self.rankings
 
         def __call__(self, *args, **kwargs):
             if self.is_v:
@@ -121,17 +128,23 @@ class Ranker:
                 continue
 
             for i in range(len(document_pos) - 1):
-                if abs(document_pos[i] - document_pos[i + 1]) <= 1:
+                if abs(document_pos[i][0] - document_pos[i + 1][0]) <= 1:
                     # logger.debug(f"{url} has potential bigrams, increase rank.")
                     self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
                     break
 
-    def rank(self, index_entries, pos_tolerance):
-        """ Return a list of URLs in ranked order.
+    def disjunctive_rank(self, index_entries, pos_tolerance):
+        """ Return a list of URLs in ranked order. This is a *disjunctive* search.
 
         1. Ensure that the search time is under some threshold (defined in our config file). This is accomplished by
            allocating search time to each query term (but allow unused time to spill over to other terms).
-        2.
+        2. Iterate through each search term's posting list (while respecting the aforementioned time constraints).
+        3. If the retrieved token hash associated with a posting matches that of another document found in that entry,
+           ignore it. If this URL is smaller than the existing URL we have, replace it.
+        4. Compute our weights and augment our rankings. These are tf-idf, tags (important words), and URL depth. Save
+           our word positions until we finish processing all entries.
+        5. Boost the ranks of URLs that have n-grams.
+        6. Return our results.
 
         :param index_entries: List of lists of token, document count, and iterator of postings.
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
@@ -191,6 +204,119 @@ class Ranker:
 
         self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
         return self.ranking_handler()
+
+    def conjunctive_rank(self, index_entries, pos_tolerance):
+        """ Return a list of URLs in ranked order. This is a *conjunctive* search.
+
+        1. If only one term exists, defer this to the disjunctive_rank. Otherwise, proceed.
+        2. We process the entries with the smallest number of postings first (think pessimistically first).
+        3. Intersect the first two entries. We perform this intersection in O(m + n) time, where m and n refer to the
+           number of postings in these two entries.
+        4. Upon intersecting, a result will compute the appropriate weights and augment our rankings. These are tf-idf,
+           tags (important words), and URL depth. Save our word positions until we finish processing all entries.
+        5. Finish intersecting the remaining words.
+        6. Remove duplicates (after the fact), by utilizing the token_hashes of all resultant URLs.
+        7. Boost the ranks of URLs that have n-grams.
+        8. Return our results.
+        9. If at any point while intersecting, we run out of time, boost the n-grams and return the sorted list.
+
+        :param index_entries: List of lists of token, document count, and iterator of postings.
+                              [(token, document count, [posting 1, posting 2, ...] ), ...]
+        :param pos_tolerance: Number of words stopped from the query, which specifies a tolerance for the ngram booster.
+        :return: List of URLs in ranked order.
+        """
+        if len(index_entries) == 1:
+            return self.disjunctive_rank(index_entries, pos_tolerance)
+
+        self.ranking_handler.reset()
+        combined_document_pos = dict()
+        processed_token_hashes = dict()
+
+        def _finish_ranking():
+            """ 1) remove duplicates, 2) boost n-grams, and 3) return the sorted rankings. """
+            # for _, urls in processed_token_hashes.items():
+            #     if len(urls) > 1:
+            #         for u in sorted(urls, key=lambda a: len(a))[1:]:
+            #             self.ranking_handler.remove(u)  # TODO: There's a key error here...
+            #             del combined_document_pos[u]  # TODO: There's a key error here...
+            # self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+            return self.ranking_handler()
+
+        # We process the entry with the least cardinality first.
+        sorted_entries = sorted(index_entries, key=lambda i: i[1])
+        token_left, countp_left, postings_left = sorted_entries[0]
+        token_right, countp_right, postings_right = sorted_entries[1]
+
+        # Perform the intersection for the first two entries.
+        t_limit = time.process_time() + self.config['ranker']['maximumSearchTime'] - 0.05
+        url_left, tf_left, tags_left, dpos_left, hashv_left = next(postings_left)
+        url_right, tf_right, tags_right, dpos_right, hashv_right = next(postings_right)
+        consumed_left, consumed_right = 1, 1
+
+        while consumed_left < countp_left and consumed_right < countp_right:
+            if url_left < url_right:
+                url_left, tf_left, tags_left, dpos_left, hashv_left = next(postings_left)
+                consumed_left += 1
+            elif url_right < url_left:
+                url_right, tf_right, tags_right, dpos_right, hashv_right = next(postings_right)
+                consumed_right += 1
+            else:
+                # Handle duplicates afterwards.
+                if hashv_left not in processed_token_hashes:
+                    processed_token_hashes[hashv_left] = []
+                if url_left not in processed_token_hashes[hashv_left]:
+                    processed_token_hashes[hashv_left].append(url_left)
+
+                if time.process_time() > t_limit:
+                    logger.info(f'Exiting early. Processed {consumed_left} postings of entry {token_left} and'
+                                f' {consumed_right} postings of entry {token_right}.')
+                    return _finish_ranking()
+
+                self.ranking_handler.pre_augment(url_left)
+                self.ranking_handler.augment(url_left, 0, self._tf_idf(tf_left, countp_left))
+                self.ranking_handler.augment(url_left, 0, self._tf_idf(tf_right, countp_right))
+                self.ranking_handler.augment(url_left, 1, self._tag_value(tags_left))
+                self.ranking_handler.augment(url_left, 1, self._tag_value(tags_right))
+                self.ranking_handler.augment(url_left, 2, self._depth_value(url_left))
+                combined_document_pos[url_left] = list(heapq.merge(
+                    list((d, 0) for d in dpos_left), list((d, 1) for d in dpos_right), key=lambda a: a[0]))
+
+                if consumed_left < countp_left:
+                    url_left, tf_left, tags_left, dpos_left, hashv_left = next(postings_left)
+                    consumed_left += 1
+                if consumed_right < countp_right:
+                    url_right, tf_right, tags_right, dpos_right, hashv_right = next(postings_right)
+                    consumed_right += 1
+
+        logger.info(f'Processed all postings of entries {token_left} and {token_right}.')
+
+        # Intersect the remaining entries.
+        for entry in sorted_entries[2:]:
+            remove_set = set(self.ranking_handler.rankings.keys())
+            token, countp, postings = entry
+
+            for k in range(0, countp):
+                if time.process_time() > t_limit:
+                    logger.info(f'Exiting early. Processed {k} postings of entry {token}.')
+                    return _finish_ranking()
+
+                url, tf, tags, dpos, hashv = next(postings)
+                if self.ranking_handler.contains(url):
+                    remove_set.remove(url)
+                    self.ranking_handler.augment(url, 0, self._tf_idf(tf, countp))
+                    self.ranking_handler.augment(url, 1, self._tag_value(tags))
+                    self.ranking_handler.augment(url, 2, self._depth_value(url))
+                    if url not in processed_token_hashes[hashv]:
+                        processed_token_hashes[hashv].append(url)
+                    combined_document_pos[url] = list(heapq.merge(
+                        combined_document_pos[url], list((d, k) for d in dpos), key=lambda a: a[0]))
+
+            logger.info(f'Processed all postings of entry {token}.')
+            for url in remove_set:
+                self.ranking_handler.remove(url)
+                del combined_document_pos[url]
+
+        return _finish_ranking()
 
 
 class Retriever:
@@ -279,7 +405,8 @@ class Retriever:
 
         t1 = time.process_time()
         logger.info(f'Time to search words in skip list: {1000.0 * (t1 - t0)}ms.')
-        ranking_output = self.ranker.rank(ranking_input, len(original_search_terms) - len(stopped_search_terms))
+        ranking_output = self.ranker.conjunctive_rank(
+            ranking_input, len(original_search_terms) - len(stopped_search_terms))
 
         t2 = time.process_time()
         logger.info(f'Time to fetch results + perform ranking: {1000.0 * (t2 - t1)}ms.')

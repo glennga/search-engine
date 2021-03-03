@@ -517,8 +517,8 @@ class Indexer:
         self.config = kwargs
         self.tokenizer = Tokenizer()
         self.corpus_path = Path(corpus)
-
-        self.postings_f = lambda e: e[1]  # We are going to sort by the term frequency.
+        self.postings_f = lambda e: e[0]  # We are going to sort by the URL (i.e. doc ID).
+        # self.postings_f = lambda e: e[1]  # We are going to sort by term frequency.
         self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, **kwargs)
 
     def index(self):
