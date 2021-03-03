@@ -234,16 +234,27 @@ class Ranker:
 
         def _finish_ranking():
             """ 1) remove duplicates, 2) boost n-grams, and 3) return the sorted rankings. """
-            # for _, urls in processed_token_hashes.items():
-            #     if len(urls) > 1:
-            #         for u in sorted(urls, key=lambda a: len(a))[1:]:
-            #             self.ranking_handler.remove(u)  # TODO: There's a key error here...
-            #             del combined_document_pos[u]  # TODO: There's a key error here...
+            for _, urls in processed_token_hashes.items():
+                if len(urls) > 1:
+                    for u in sorted(urls, key=lambda a: len(a))[1:]:
+                        try:
+                            self.ranking_handler.remove(u)  # TODO: There's a key error here...
+                        except KeyError as e:  # Maybe the document is already not in here
+                            logger.error(f"The duplicate document {u} is not in our ranking handler, continue.")
+                        try:
+                            del combined_document_pos[u]  # TODO: There's a key error here...
+                        except KeyError as e: # Maybe the document is already not in here
+                            logger.error(f"The duplicate document {u} is not in our combined document positions list, continue.")
             # self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
             return self.ranking_handler()
 
-        # We process the entry with the least cardinality first.
+
+        # First, get our sorted index entries.
         sorted_entries = sorted(index_entries, key=lambda i: i[1])
+        # If the sorted entries list is empty, just return.
+        if len(sorted_entries) == 0:
+            return _finish_ranking()
+        # We process the entry with the least cardinality first.
         token_left, countp_left, postings_left = sorted_entries[0]
         token_right, countp_right, postings_right = sorted_entries[1]
 
@@ -482,7 +493,7 @@ class Presenter:
                 self.view.next_button.hide()
                 self.view.next_spacer.show()
 
-            self.view.results_label.setText(f'{lower_bound + 1} to {upper_bound} results displayed.')
+            self.view.results_label.setText(f'{(lower_bound + 1) if upper_bound != 0 else 0} to {upper_bound} results displayed.')
             self.view.results_list.clear()
             for i, url in enumerate(self.working_results[lower_bound:upper_bound]):
                 logger.debug(f'Adding result URL {url[0]} of score(s) {url[1]} to display.')
