@@ -23,9 +23,37 @@ logger = __init__.get_logger('Search')
 
 class Ranker:
     """ Given a collection of postings, return an iterator that returns URLs in ranked order. """
-    # TODO: We should incorporate the following: tf-idf, "important words", anchor text, word positions.
-    # TODO: We should remove duplicate documents based on the token hash.
+    class RankingHandler:
+        """ Mainly for debugging purposes. Switch to the value based method when not debugging. """
+        def __init__(self, is_v):
+            self.rankings = dict()
+            self.is_v = is_v
+
+        def reset(self):
+            self.rankings.clear()
+
+        def pre_augment(self, url):
+            if url not in self.rankings:
+                self.rankings[url] = [0, 0, 0, 0] if not self.is_v else 0
+
+        def augment(self, url, i, v):
+            if self.is_v:
+                self.rankings[url] += v
+            else:
+                self.rankings[url][i] += v
+
+        def replace(self, old_url, new_url):
+            self.rankings[new_url] = self.rankings[old_url]
+            del self.rankings[old_url]
+
+        def __call__(self, *args, **kwargs):
+            if self.is_v:
+                return sorted(self.rankings.items(), key=lambda j: j[1], reverse=True)
+            else:
+                return sorted(self.rankings.items(), key=lambda j: sum(j[1]), reverse=True)
+
     def __init__(self, **kwargs):
+        self.ranking_handler = self.RankingHandler(True)
         self.config = kwargs
 
     @staticmethod
@@ -48,7 +76,6 @@ class Ranker:
         """
         tag_score = 1
         for tag in token_tags:
-            # TODO: tune these weights in the config file.
             if tag in self.config['ranker']['tags']:
                 tag_score += self.config['ranker']['tags'][tag]
 
@@ -71,7 +98,7 @@ class Ranker:
             for _, g in itertools.groupby(enumerate(document_pos), lambda a: a[0] - a[1]):
                 consecutive_grouping = list(map(operator.itemgetter(1), g))
                 if len(consecutive_grouping) >= search_length:
-                    rankings[url] += 1.0 * self.config["ranker"]["documentPos"]["weight"]
+                    self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
 
     def _bigram_boost(self, combined_document_pos, rankings):
         """ Current formula: if the tokens share document positions close to each other, increase rank. """
@@ -82,7 +109,7 @@ class Ranker:
             for i in range(len(document_pos) - 1):
                 if abs(document_pos[i] - document_pos[i + 1]) <= 1:
                     # logger.debug(f"{url} has potential bigrams, increase rank.")
-                    rankings[url] += 1.0 * self.config["ranker"]["documentPos"]["weight"]
+                    self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
                     break
 
     def rank(self, index_entries):
@@ -92,7 +119,7 @@ class Ranker:
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
         :return: List of URLs in ranked order.
         """
-        rankings = dict()  # {url: ranking value}
+        self.ranking_handler.reset()
         combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_entry_prev = time.process_time()
         allocated_search_time = max((self.config['ranker']['maximumSearchTime'] - 0.05) / len(index_entries),
@@ -104,36 +131,34 @@ class Ranker:
             processed_token_hashes = dict()   # {token_hash: url}
 
             for p in range(postings_count):
-                if time.process_time() < t_entry_prev + allocated_search_time and \
-                        p < self.config['ranker']['maxPostings']:
-                    # entry = (url, token.frequency, token.tags, token.document_pos, token_hash,)
-                    url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
-                    if token_hash in processed_token_hashes:
-                        logger.debug(f'Current URL {url} is similar to processed URL '
-                                     f'{processed_token_hashes[token_hash]}. Skipping ranking.')
-                        if len(url) < len(processed_token_hashes[token_hash]):
-                            logger.debug(f'Length of value of current URL is smaller, so we are going to assume the '
-                                         f'URL {url}.')
-                            combined_document_pos[url] = combined_document_pos[processed_token_hashes[token_hash]]
-                            rankings[url] = rankings[processed_token_hashes[token_hash]]
-                            del combined_document_pos[processed_token_hashes[token_hash]]
-                            del rankings[processed_token_hashes[token_hash]]
-                            del processed_token_hashes[token_hash]
-                            processed_token_hashes[token_hash] = url
-                        continue
-                    else:
+                if time.process_time() >= allocated_search_time[k] or p >= self.config['ranker']['maxPostings']:
+                    break
+
+                # Touch our disk! Get the posting.
+                url, token_frequency, token_tags, token_document_pos, token_hash = next(postings)
+
+                # Avoid duplicate documents.
+                if token_hash in processed_token_hashes:
+                    # logger.debug(f'{url} is similar to {processed_token_hashes[token_hash]}. Skipping ranking.')
+                    if len(url) < len(processed_token_hashes[token_hash]):
+                        # logger.debug(f'Current URL is smaller, so we are going to assume the URL {url}.')
+                        combined_document_pos[url] = combined_document_pos[processed_token_hashes[token_hash]]
+                        self.ranking_handler.replace(processed_token_hashes[token_hash], url)
+                        del combined_document_pos[processed_token_hashes[token_hash]]
+
+                        del processed_token_hashes[token_hash]
                         processed_token_hashes[token_hash] = url
+                    continue
+                else:
+                    processed_token_hashes[token_hash] = url
 
-                    if url not in rankings:
-                        rankings[url] = 0
-
-                    v1 = (self._tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
-                    v2 = (self._tag_value(token_tags) * self.config['ranker']['composite']['tags'])
-                    v3 = (self._depth_value(url) * self.config['ranker']['composite']['urlDepth'])
-                    # logger.debug(f'tf-idf value for document {url} of entry {entry} is {v1}.')
-                    # logger.debug(f'Tags value for document {url} of entry {entry} is {v2}.')
-                    # logger.debug(f'Depth value for document {url} of entry {entry} is {v3}.')
-                    rankings[url] += v1 * v2 * v3
+                self.ranking_handler.pre_augment(url)
+                v1 = (self._tf_idf(token_frequency, postings_count) * self.config['ranker']['composite']['tfIdf'])
+                v2 = (self._tag_value(token_tags) * self.config['ranker']['composite']['tags'])
+                v3 = (self._depth_value(url) * self.config['ranker']['composite']['urlDepth'])
+                self.ranking_handler.augment(url, 0, v1)
+                self.ranking_handler.augment(url, 0, v2)
+                self.ranking_handler.augment(url, 0, v3)
 
                     # Track the token document positions for later.
                     if url not in combined_document_pos:
@@ -149,8 +174,8 @@ class Ranker:
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
             t_entry_prev = t_current
 
-        self._full_query_boost(combined_document_pos, rankings, len(index_entries))
-        return sorted(rankings.items(), key=lambda j: j[1], reverse=True)
+        self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+        return self.ranking_handler()
 
 
 class Retriever:
