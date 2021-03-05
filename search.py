@@ -231,7 +231,7 @@ class Ranker:
         :param pos_tolerance: Number of words stopped from the query, which specifies a tolerance for the ngram booster.
         :return: List of URLs in ranked order.
         """
-        if len(index_entries) < 1:
+        if len(index_entries) <= 1:
             return self.disjunctive_rank(index_entries, pos_tolerance)
 
         self.ranking_handler.reset()
