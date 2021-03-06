@@ -395,26 +395,31 @@ class StorageHandler:
             logger.info(f'Starting merge to generate file {run_file}.')
 
             if len(self.memory_component) > 0:
-                with open(self.merge_queue.popleft(), 'rb') as right_fp, \
+                right_filename = self.merge_queue.popleft()
+                with open(right_filename, 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on in-memory component and {right_fp} component.')
                     left_component = self._generator_dict(self.memory_component, lambda k: k[0])
-                    right_component = self._generator_file(right_fp)
+                    right_component = self._generator_pickle(right_fp)
                     l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
                     self.memory_component.clear()
+                os.remove(right_filename)
 
             else:
-                with open(self.merge_queue.popleft(), 'rb') as left_fp, \
-                     open(self.merge_queue.popleft(), 'rb') as right_fp, \
+                left_filename, right_filename = self.merge_queue.popleft(), self.merge_queue.popleft()
+                with open(left_filename, 'rb') as left_fp, \
+                     open(right_filename, 'rb') as right_fp, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
                     logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
-                    left_component = self._generator_file(left_fp)
-                    right_component = self._generator_file(right_fp)
+                    left_component = self._generator_pickle(left_fp)
+                    right_component = self._generator_pickle(right_fp)
                     l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
+                os.remove(left_filename)
+                os.remove(right_filename)
 
             self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + run_file)
 
-        data_file = str(uuid.uuid4()) + '.idx'
+        data_file = os.path.basename(self.config['corpus']) + '.idx'
         os.rename(self.merge_queue.popleft(), self.config['storage']['dataDirectory'] + '/' + data_file)
         logger.info(f'Merge has finished. Index {data_file} has been built.')
         self.config['indexFile'] = data_file
