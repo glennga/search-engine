@@ -11,6 +11,7 @@ import random
 import uuid
 import hashlib
 import tempfile
+import base64
 
 from lxml import etree, html
 from pathlib import Path
@@ -110,14 +111,14 @@ class Tokenizer:
                                 continue
                             # Is the word not in the tokens list?
                             if word not in tokens:
-                                tokens[word] = self.Token(word, 1, [token_count], [element.tag])
+                                tokens[word] = self.Token(word, 1, [token_count], [str(element.tag)])
                             # The word is in the tokens list.
                             else:
                                 token = tokens[word]
                                 token.frequency += 1
                                 token.document_pos.append(token_count)
                                 if element.tag not in token.tags:
-                                    token.tags.append(element.tag)
+                                    token.tags.append(str(element.tag))
                             token_count += 1
                     except UnicodeDecodeError as e:
                         self.logger.error(f"Tokenizer: UnicodeDecodeError: {e}. Skipping element in docID "
@@ -129,7 +130,8 @@ class Tokenizer:
 
         tokens = list(tokens.values())
         self.logger.debug(f"Tokens in URL {url}, docID starting with {doc_id[:6]}: {[token.token for token in tokens]}")
-        return tokens, url, hashlib.md5(pickle.dumps(tokens)).digest()
+        return tokens, url, base64.b64encode(hashlib.md5(pickle.dumps(tokens)).digest()).decode('ascii')
+
 
 
 class SkipList:
