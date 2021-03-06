@@ -133,148 +133,162 @@ class Tokenizer:
         return tokens, url, base64.b64encode(hashlib.md5(pickle.dumps(tokens)).digest()).decode('ascii')
 
 
+class Posting:
+    """ Class which wraps a posting entry. """
+    END_SKIP_LABEL_MARKER = '$'
+    SLOT_WIDTH_WIDTH = 32
 
-class SkipList:
-    END_LABEL = '$'
-    START_LABEL = '^'
+    def __init__(self, url, frequency, tags, position_v, hash_v, skip_label=None, skip_slot=None):
+        self.url = url
+        self.frequency = frequency
+        self.tags = tags
+        self.position_v = position_v
+        self.hash_v = hash_v
+        self.skip_label = skip_label
+        self.skip_slot = skip_slot
 
-    class _Node:
-        def __init__(self, label, tell, level):
-            self.label = label
-            self.tell = tell
-            self.level = level
-            self.sibling = None
-            self.child = None
+    def __getitem__(self, index):
+        return [self.url, self.frequency, self.tags, self.position_v, self.hash_v][index]
 
-        def __str__(self):
-            return f'<{self.label}, {self.tell}> @ {self.level}'
-
-        def set_sibling(self, sibling):
-            self.sibling = sibling
-
-        def set_child(self, child):
-            self.child = child
-
-        def look_right(self):
-            return self.sibling
-
-        def look_down(self):
-            return self.child
-
-    def __init__(self, l1_label_tells, **kwargs):
-        self.skip_probability = kwargs['skip_probability']
-        self.l1_probability = kwargs['l1_probability']
-        self.max_skip_height = kwargs['max_skip_height']
-        self.sentinel = self._build(l1_label_tells)
-
-    def __getitem__(self, item):
-        """ Given an item, search our skip list and return the tell associated with the closest node.
-
-        1) We start from the top node of our sentinel.
-        2) Drop down and move right until we reach a tail node OR that node's label is greater than our query item.
-        3) Return the lowest and closest node's tell.
-
-        :param item: Label to search for.
-        :return The tell associated with smallest closest label in our list.
-        """
-        current_node = self.sentinel
-        while current_node.look_down() is not None:
-            current_node = current_node.look_down()
-            while current_node.look_right().label != self.END_LABEL and current_node.look_right().label < item:
-                current_node = current_node.look_right()
-
-        return current_node.look_right().tell
-
-    def __str__(self):
-        def _exhaust_sll(node):
-            resultant = ''
-            while node.look_right().label != self.END_LABEL:
-                node = node.look_right()
-                resultant += f'({node.label}, {node.tell}) -- '
-            return resultant
-
-        complete_string = ''
-        current_left_node = self.sentinel
-        while current_left_node.look_down() is not None:
-            current_left_node = current_left_node.look_down()
-            partial_string = self.START_LABEL + ' -- ' + _exhaust_sll(current_left_node) + self.END_LABEL
-            complete_string += partial_string + f'\n|{"".join("-" for _ in range(len(partial_string) - 2))}|\n'
-
-        return complete_string
-
-    def augment(self, augment_f):
-        """ Augment each node's tell in an already built skip list. """
-        def _exhaust_sll(node):
-            while node.look_right().label != self.END_LABEL:
-                node = node.look_right()
-                node.tell = augment_f(node.tell)
-
-        current_left_node = self.sentinel
-        while current_left_node.look_down() is not None:
-            current_left_node = current_left_node.look_down()
-            _exhaust_sll(current_left_node)
-
-    @staticmethod
-    def _link_nodes(node_list):
-        """ Construct a SLL given an ordered list of nodes. We return the first node in this sequence. """
-        current_node = node_list[0]
-        for node in node_list[1:]:
-            current_node.set_sibling(node)
-            current_node = node
-
-        return node_list[0]
-
-    def _build(self, l1_label_tells):
-        """ Build our skip list.
-
-        1) Build the L1 layer. This will consist of all of the labels supplied to us by the caller.
-        2) Build the next layer. This involves a) building the next sentinel node, b) iterating to the end of the
-           previous sentinel node's siblings and c) determining whether a node survives or not (by skipProbability).
-           We ensure a node's survival by creating a parent of the current node and linking it with the next
-           sentinel node.
-        3) Repeat this for maxSkipHeight times. We do not include layers that have no content nodes or whose content
-           has not changed with the previous layer.
-
-        :param l1_label_tells: <label, byte location> pairs that represent the L1 layer of the skip list.
-        :return A list of nodes, representing the starting nodes for each layer.
-        """
-        l1_sentinel = self._link_nodes([self._Node(self.START_LABEL, None, 1)] +
-                                       [self._Node(t[0], t[1], 1) for t in l1_label_tells] +
-                                       [self._Node(self.END_LABEL, None, 1)])
-
-        current_node = l1_sentinel
-        current_height = 1
-        current_length = len(l1_label_tells) + 2
-        for level in range(1, self.max_skip_height):
-            level_sentinel = self._Node(self.START_LABEL, None, current_height + 1)
-            level_sentinel.set_child(current_node)
-            level_nodes = [level_sentinel]
-
-            while current_node.look_right() is not None:
-                if current_node.label != self.START_LABEL and random.random() < self.skip_probability:
-                    new_node = self._Node(current_node.label, current_node.tell, current_height + 1)
-                    new_node.set_child(current_node)
-                    level_nodes.append(new_node)
-                current_node = current_node.look_right()
-            current_tail = current_node
-
-            if (len(level_nodes) == 1 and current_length == 3) or level == self.max_skip_height - 1:
-                level_tail = self._Node(self.END_LABEL, None, current_height + 1)
-                level_tail.set_child(current_tail)
-                current_node = self._link_nodes([level_sentinel, level_tail])
-                return current_node
-            elif 2 <= len(level_nodes) < current_length - 1:
-                level_tail = self._Node(self.END_LABEL, None, current_height + 1)
-                level_tail.set_child(current_tail)
-                current_node = self._link_nodes(level_nodes + [level_tail])
-                current_height = current_height + 1
-                current_length = len(level_nodes) + 1
-            else:
-                current_node = level_sentinel.look_down()
+    def __iter__(self):
+        yield 'url', self.url
+        yield 'frequency', self.frequency
+        yield 'tags', self.tags
+        yield 'position_v', self.position_v
+        yield 'hash_v', self.hash_v
+        yield 'skip_label', self.skip_label
+        yield 'skip_slot', self.skip_slot
 
 
 class IndexDescriptor:
     """ Descriptor for a given index file. Holds a skip list to give positions to "skip" to in the index file. """
+    class SkipList:
+        END_LABEL = '$'
+        START_LABEL = '^'
+
+        class _Node:
+            def __init__(self, label, tell, level):
+                self.label = label
+                self.tell = tell
+                self.level = level
+                self.sibling = None
+                self.child = None
+
+            def __str__(self):
+                return f'<{self.label}, {self.tell}> @ {self.level}'
+
+            def set_sibling(self, sibling):
+                self.sibling = sibling
+
+            def set_child(self, child):
+                self.child = child
+
+            def look_right(self):
+                return self.sibling
+
+            def look_down(self):
+                return self.child
+
+        def __init__(self, l1_label_tells, **kwargs):
+            self.skip_probability = kwargs['skip_probability']
+            self.l1_probability = kwargs['l1_probability']
+            self.max_skip_height = kwargs['max_skip_height']
+            self.sentinel = self._build(l1_label_tells)
+
+        def __getitem__(self, item):
+            """ Given an item, search our skip list and return the tell associated with the closest node.
+
+            1) We start from the top node of our sentinel.
+            2) Drop down and move right until we reach a tail node OR that node's label is greater than our query item.
+            3) Return the lowest and closest node's tell.
+
+            :param item: Label to search for.
+            :return The tell associated with smallest closest label in our list.
+            """
+            current_node = self.sentinel
+            while current_node.look_down() is not None:
+                current_node = current_node.look_down()
+                while current_node.look_right().label != self.END_LABEL and current_node.look_right().label < item:
+                    current_node = current_node.look_right()
+
+            return current_node.look_right().tell
+
+        def __str__(self):
+            """ Print something pretty :-) """
+            def _exhaust_sll(node):
+                resultant = ''
+                while node.look_right().label != self.END_LABEL:
+                    node = node.look_right()
+                    resultant += f'({node.label}, {node.tell}) -- '
+                return resultant
+
+            complete_string = ''
+            current_left_node = self.sentinel
+            while current_left_node.look_down() is not None:
+                current_left_node = current_left_node.look_down()
+                partial_string = self.START_LABEL + ' -- ' + _exhaust_sll(current_left_node) + self.END_LABEL
+                complete_string += partial_string + f'\n|{"".join("-" for _ in range(len(partial_string) - 2))}|\n'
+
+            return complete_string
+
+        @staticmethod
+        def _link_nodes(node_list):
+            """ Construct a SLL given an ordered list of nodes. We return the first node in this sequence. """
+            current_node = node_list[0]
+            for node in node_list[1:]:
+                current_node.set_sibling(node)
+                current_node = node
+
+            return node_list[0]
+
+        def _build(self, l1_label_tells):
+            """ Build our skip list.
+
+            1) Build the L1 layer. This will consist of all of the labels supplied to us by the caller.
+            2) Build the next layer. This involves a) building the next sentinel node, b) iterating to the end of the
+               previous sentinel node's siblings and c) determining whether a node survives or not (by skipProbability).
+               We ensure a node's survival by creating a parent of the current node and linking it with the next
+               sentinel node.
+            3) Repeat this for maxSkipHeight times. We do not include layers that have no content nodes or whose content
+               has not changed with the previous layer.
+
+            :param l1_label_tells: <label, byte location> pairs that represent the L1 layer of the skip list.
+            :return A list of nodes, representing the starting nodes for each layer.
+            """
+            l1_sentinel = self._link_nodes([self._Node(self.START_LABEL, None, 1)] +
+                                           [self._Node(t[0], t[1], 1) for t in l1_label_tells] +
+                                           [self._Node(self.END_LABEL, None, 1)])
+
+            current_node = l1_sentinel
+            current_height = 1
+            current_length = len(l1_label_tells) + 2
+            for level in range(1, self.max_skip_height):
+                level_sentinel = self._Node(self.START_LABEL, None, current_height + 1)
+                level_sentinel.set_child(current_node)
+                level_nodes = [level_sentinel]
+
+                while current_node.look_right() is not None:
+                    if current_node.label != self.START_LABEL and random.random() < self.skip_probability:
+                        new_node = self._Node(current_node.label, current_node.tell, current_height + 1)
+                        new_node.set_child(current_node)
+                        level_nodes.append(new_node)
+                    current_node = current_node.look_right()
+                current_tail = current_node
+
+                if (len(level_nodes) == 1 and current_length == 3) or level == self.max_skip_height - 1:
+                    level_tail = self._Node(self.END_LABEL, None, current_height + 1)
+                    level_tail.set_child(current_tail)
+                    current_node = self._link_nodes([level_sentinel, level_tail])
+                    return current_node
+                elif 2 <= len(level_nodes) < current_length - 1:
+                    level_tail = self._Node(self.END_LABEL, None, current_height + 1)
+                    level_tail.set_child(current_tail)
+                    current_node = self._link_nodes(level_nodes + [level_tail])
+                    current_height = current_height + 1
+                    current_length = len(level_nodes) + 1
+                else:
+                    current_node = level_sentinel.look_down()
+
     def __init__(self, l1_token_tells, **kwargs):
         self.skip_probability = kwargs['storage']['vocab']['skipProbability']
         self.l1_probability = kwargs['storage']['vocab']['l1Probability']
@@ -284,8 +298,8 @@ class IndexDescriptor:
         self.corpus = kwargs['corpus']
 
         self.time_built = str(datetime.datetime.now().isoformat())
-        self.sentinel = SkipList(l1_token_tells, skip_probability=self.skip_probability,
-                                 l1_probability=self.l1_probability, max_skip_height=self.max_skip_height)
+        self.sentinel = self.SkipList(l1_token_tells, skip_probability=self.skip_probability,
+                                      l1_probability=self.l1_probability, max_skip_height=self.max_skip_height)
 
     def __getitem__(self, item):
         return self.sentinel[item]
