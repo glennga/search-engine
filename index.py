@@ -10,7 +10,6 @@ import heapq
 import random
 import uuid
 import hashlib
-import tempfile
 import base64
 
 from lxml import etree, html
@@ -138,26 +137,41 @@ class Posting:
     END_SKIP_LABEL_MARKER = '$'
     SLOT_WIDTH_WIDTH = 32
 
-    def __init__(self, url, frequency, tags, position_v, hash_v, skip_label=None, skip_slot=None):
+    @staticmethod
+    def serialize_width(width):
+        return width.to_bytes(Posting.SLOT_WIDTH_WIDTH, byteorder='big')
+
+    @staticmethod
+    def deserialize_width(in_fp):
+        return int.from_bytes(in_fp.read(Posting.SLOT_WIDTH_WIDTH), 'big')
+
+    @staticmethod
+    def skip_pointer_width(label, tell, count_n):
+        return len(f',"skip_label":"{label}","skip_tell":{tell},"skip_count":{count_n}'.encode('utf-8'))
+
+    def __init__(self, url, frequency, tags, position_v, skip_label=None, skip_tell=None, skip_count=None):
         self.url = url
         self.frequency = frequency
         self.tags = tags
         self.position_v = position_v
-        self.hash_v = hash_v
         self.skip_label = skip_label
-        self.skip_slot = skip_slot
+        self.skip_tell = skip_tell
+        self.skip_count = skip_count
 
     def __getitem__(self, index):
-        return [self.url, self.frequency, self.tags, self.position_v, self.hash_v][index]
+        return [
+            self.url, self.frequency, self.tags, self.position_v, self.skip_label, self.skip_tell, self.skip_count
+        ][index]
 
     def __iter__(self):
         yield 'url', self.url
         yield 'frequency', self.frequency
         yield 'tags', self.tags
         yield 'position_v', self.position_v
-        yield 'hash_v', self.hash_v
-        yield 'skip_label', self.skip_label
-        yield 'skip_slot', self.skip_slot
+        if self.skip_label is not None and self.skip_tell is not None:
+            yield 'skip_label', self.skip_label
+            yield 'skip_tell', self.skip_tell
+            yield 'skip_count', self.skip_count
 
 
 class IndexDescriptor:
@@ -339,6 +353,12 @@ class StorageHandler:
        it)- but building a skip list can be done after the merge process simply and efficiently by just sampling while
        we build the index.
     """
+    class _DoubleComponent:
+        """ Simulates a "reset" operation by just keeping another copy of the iterator we can jump back to. """
+        def __init__(self, component_1, component_2):
+            self.component_1 = component_1
+            self.component_2 = component_2
+
     def __init__(self, corpus, postings_f, **kwargs):
         # Ensure that the directory exists first...
         if not os.path.exists(kwargs['storage']['spillDirectory']):
@@ -396,23 +416,35 @@ class StorageHandler:
 
             if len(self.memory_component) > 0:
                 right_filename = self.merge_queue.popleft()
-                with open(right_filename, 'rb') as right_fp, \
+                with open(right_filename, 'rb') as right_fp_1, open(right_filename, 'rb') as right_fp_2, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
-                    logger.info(f'Performing merge on in-memory component and {right_fp} component.')
-                    left_component = self._generator_dict(self.memory_component, lambda k: k[0])
-                    right_component = self._generator_pickle(right_fp)
+                    logger.info(f'Performing merge on in-memory component and {right_fp_1} component.')
+                    left_component = self._DoubleComponent(
+                        self._iterator_dict(self.memory_component, lambda k: k[0]),
+                        self._iterator_dict(self.memory_component, lambda k: k[0])
+                    )
+                    right_component = self._DoubleComponent(
+                        self._iterator_pickle(right_fp_1),
+                        self._iterator_pickle(right_fp_2)
+                    )
                     l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
                     self.memory_component.clear()
                 os.remove(right_filename)
 
             else:
                 left_filename, right_filename = self.merge_queue.popleft(), self.merge_queue.popleft()
-                with open(left_filename, 'rb') as left_fp, \
-                     open(right_filename, 'rb') as right_fp, \
+                with open(left_filename, 'rb') as left_fp_1, open(left_filename, 'rb') as left_fp_2, \
+                     open(right_filename, 'rb') as right_fp_1, open(right_filename, 'rb') as right_fp_2, \
                      open(self.config['storage']['spillDirectory'] + '/' + run_file, 'wb') as out_fp:
-                    logger.info(f'Performing merge on {left_fp} component and {right_fp} component.')
-                    left_component = self._generator_pickle(left_fp)
-                    right_component = self._generator_pickle(right_fp)
+                    logger.info(f'Performing merge on {left_fp_1} component and {right_fp_1} component.')
+                    left_component = self._DoubleComponent(
+                        self._iterator_pickle(left_fp_1),
+                        self._iterator_pickle(left_fp_2)
+                    )
+                    right_component = self._DoubleComponent(
+                        self._iterator_pickle(right_fp_1),
+                        self._iterator_pickle(right_fp_2)
+                    )
                     l1_labels = self._merge(left_component, right_component, len(self.merge_queue) == 0, out_fp)
                 os.remove(left_filename)
                 os.remove(right_filename)
@@ -456,7 +488,13 @@ class StorageHandler:
 
                 logger.debug(f'Writing token {token} with {len(postings)} postings to disk.')
                 pickle.dump((token, len(postings)), out_fp)
-                self._post(postings, out_fp, is_last_spill)
+                # if not is_last_spill:
+                #     for posting in postings:
+                #         pickle.dump(posting, out_fp)
+                # else:
+                #     self._post(postings, postings, len(postings), out_fp)
+                for posting in postings:
+                    pickle.dump(posting, out_fp)
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
@@ -487,20 +525,23 @@ class StorageHandler:
         def _advance(component):
             """ Return the token of the current cursor and the number of postings associated with the token. """
             try:
-                token, posting_count = next(component)
+                token_1, posting_count_1 = next(component.component_1)
+                token_2, posting_count_2 = next(component.component_2)
+                if token_1 != token_2:
+                    raise RuntimeError('Illegal state! Components are not aligned.')
                 is_exhausted = False
             except StopIteration:
-                token = None
-                posting_count = 0
+                token_1 = None
+                posting_count_1 = 0
                 is_exhausted = True
-            return token, posting_count, is_exhausted
+            return token_1, posting_count_1, is_exhausted
 
         def _postings(component, posting_count):
             """ Return the posting of the component at the current cursor for postings_count times. """
             for i in range(posting_count):
                 yield next(component)
 
-        def _write(token, posting_count, postings):
+        def _write(token, posting_count, postings_1, postings_2):
             """ Write the inverted list to our file pointer. """
             if is_last_merge and random.random() < self.config['storage']['vocab']['l1Probability']:
                 logger.debug(f'Adding {(token, out_fp.tell(), )} to L1 layer of vocab skip list.')
@@ -508,37 +549,48 @@ class StorageHandler:
 
             logger.debug(f'Writing token {token} with {posting_count} postings to disk.')
             pickle.dump((token, posting_count), out_fp)
-            self._post(postings, out_fp, is_last_merge)
+            # if not is_last_merge:
+            #     for posting in postings_1:
+            #         pickle.dump(posting, out_fp)
+            #         next(postings_2)
+            # else:
+            #     self._post(postings_1, postings_2, posting_count, out_fp)
+            for posting in postings_1:
+                pickle.dump(posting, out_fp)
+                next(postings_2)
 
         l1_labels = list()
         left_token, left_posting_count, is_left_exhausted = _advance(left_component)
         right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
         while True:
-            left_postings_iterable = _postings(left_component, left_posting_count)
-            right_postings_iterable = _postings(right_component, right_posting_count)
+            left_iterator_1 = _postings(left_component.component_1, left_posting_count)
+            left_iterator_2 = _postings(left_component.component_2, left_posting_count)
+            right_iterator_1 = _postings(right_component.component_1, right_posting_count)
+            right_iterator_2 = _postings(right_component.component_2, right_posting_count)
 
             if not is_left_exhausted and not is_right_exhausted:
                 if left_token == right_token:
-                    merged_postings = heapq.merge(left_postings_iterable, right_postings_iterable, key=self.postings_f)
-                    _write(left_token, left_posting_count + right_posting_count, merged_postings)
+                    merged_postings_1 = heapq.merge(left_iterator_1, right_iterator_1, key=self.postings_f)
+                    merged_postings_2 = heapq.merge(left_iterator_2, right_iterator_2, key=self.postings_f)
+                    _write(left_token, left_posting_count + right_posting_count, merged_postings_1, merged_postings_2)
                     left_token, left_posting_count, is_left_exhausted = _advance(left_component)
                     right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
                 elif left_token > right_token:
-                    _write(right_token, right_posting_count, right_postings_iterable)
+                    _write(right_token, right_posting_count, right_iterator_1, right_iterator_2)
                     right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
                 else:  # left_token < right_token
-                    _write(left_token, left_posting_count, left_postings_iterable)
+                    _write(left_token, left_posting_count, left_iterator_1, left_iterator_2)
                     left_token, left_posting_count, is_left_exhausted = _advance(left_component)
 
             elif is_left_exhausted and not is_right_exhausted:
-                _write(right_token, right_posting_count, right_postings_iterable)
+                _write(right_token, right_posting_count, right_iterator_1, right_iterator_2)
                 right_token, right_posting_count, is_right_exhausted = _advance(right_component)
 
             elif not is_left_exhausted and is_right_exhausted:
-                _write(left_token, left_posting_count, left_postings_iterable)
+                _write(left_token, left_posting_count, left_iterator_1, left_iterator_2)
                 left_token, left_posting_count, is_left_exhausted = _advance(left_component)
 
             else:  # is_left_exhausted and is_right_exhausted
@@ -546,62 +598,51 @@ class StorageHandler:
 
         return l1_labels
 
-    def _post(self, postings, out_fp, is_last_run):
-        """ Dump our postings to disk. If this is the last run, then build the associated skip list as well.
+    def _post(self, postings_1, postings_2, posting_count, out_fp):
+        """ Dump our postings to disk and augment postings with skip pointers.
 
-        1. If this is an intermediate run, do not build our skip list. Simply write our postings list to disk.
-        2. Otherwise, we must build our skip list. We first perform a "first-pass", which will consist find the offsets
-           associated with each sampled posting. We determine this by writing to a temporary file.
-        3. Determine the starting position for each label. Because our how we are serializing our data (and the fact
-           that integers aren't fixed width), we need to perform this in an iterative manner until we are sure that
-           this starting position doesn't change (i.e. a fixed point algorithm here).
-        4. Finally, write the skip list and our postings to disk.
+        1. Determine which postings will act as anchors (i.e. hold skip pointer endpoints).
+        2. Determine the URLs and file positions associated with our anchors. We cannot do this without exhausting
+           our list first, so iterate through our postings, then "reset" our iterator (use the second iterator).
+        3. Iterate through our postings list again, attach the skip pointers, and write the postings to disk.
 
         """
-        if not is_last_run:
-            for posting in postings:
-                pickle.dump(posting, out_fp)
-            return
+        def _serialize(_posting):
+            return json.dumps(dict(_posting), separators=(',', ':')).encode('utf-8')
 
-        l1_labels = list()
-        with tempfile.TemporaryFile() as tmp_fp:
-            logger.debug('Performing first pass of writing postings to disk.')
-            for posting in postings:
-                if random.random() < self.config['storage']['posting']['l1Probability']:
-                    l1_label = self.postings_f(posting)  # This depends on how our postings list is sorted.
-                    logger.debug(f'Adding {(l1_label, tmp_fp.tell(),)} to L1 layer of postings skip list.')
-                    l1_labels.append((l1_label, tmp_fp.tell(), ))
-                pickle.dump(posting, tmp_fp)
+        slot_endpoints = list(
+            i for i in range(posting_count) if i != 0 and
+            random.random() < self.config['storage']['posting']['skipProbability'])
+        slot_deltas = (
+            [slot_endpoints[i + 1] - slot_endpoints[i] for i in range(len(slot_endpoints) - 1)]
+            + [posting_count - slot_endpoints[-1]]
+        ) if len(slot_endpoints) > 0 else [posting_count]
+        slots = dict(zip(slot_endpoints, slot_deltas))
+        logger.debug(f'The following postings will be anchors in our skip list: {slot_endpoints}')
 
-            logger.debug('Performing second pass of writing postings to disk.')
-            posting_skip_list = SkipList(
-                l1_labels, skip_probability=self.config['storage']['posting']['skipProbability'],
-                l1_probability=self.config['storage']['posting']['l1Probability'],
-                max_skip_height=self.config['storage']['posting']['maxSkipHeight']
-            )
+        logger.debug('Performing pass #1: Finding the URLs and tells associated with the anchor slots.')
+        anchor_queue, out_tell = deque(), out_fp.tell()
+        for i, raw_posting in enumerate(postings_1):
+            posting = Posting(*raw_posting)
+            serialized_posting = _serialize(posting)
+            if i in slot_endpoints:
+                out_tell += Posting.skip_pointer_width(out_tell, self.postings_f(raw_posting), slots[i])
+                anchor_queue.append((out_tell, self.postings_f(raw_posting), slots[i]))
+            out_tell += Posting.SLOT_WIDTH_WIDTH + len(serialized_posting)
+        out_tell += Posting.skip_pointer_width(out_tell, Posting.END_SKIP_LABEL_MARKER, slot_deltas[-1])
+        anchor_queue.append((out_tell, Posting.END_SKIP_LABEL_MARKER, slot_deltas[-1]))
 
-            # Note: this is messy as hell, but should work well enough...
-            starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
-            posting_skip_list.augment(lambda a: a + starting_position)
-            next_starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
-            while starting_position != next_starting_position:
-                posting_skip_list.augment(lambda a: a + next_starting_position - starting_position)
-                starting_position = next_starting_position
-                next_starting_position = out_fp.tell() + len(pickle.dumps(posting_skip_list))
-
-            logger.debug('Now writing our skip list and postings to the given file.')
-            pickle.dump(posting_skip_list, out_fp)
-            tmp_fp.seek(0)
-            tmp_entries = self._generator_file(tmp_fp)
-            while True:
-                try:
-                    posting = next(tmp_entries)
-                    pickle.dump(posting, out_fp)
-                except StopIteration:
-                    break
+        logger.debug('Performing pass #2: Write the final results to disk.')
+        for i, raw_posting in enumerate(postings_2):
+            posting = Posting(*raw_posting)
+            if i == 0 or i in slot_endpoints:
+                posting.skip_tell, posting.skip_label, posting.skip_count = anchor_queue.popleft()
+            serialized_posting = _serialize(posting)
+            out_fp.write(Posting.serialize_width(len(serialized_posting)))
+            out_fp.write(serialized_posting)
 
     @staticmethod
-    def _generator_dict(in_dict, entry_f):
+    def _iterator_dict(in_dict, entry_f):
         """ Turn a given dictionary into an iterator that returns <key, count> and the consequent sorted entries.  """
         def _entry_generator():
             for k, v in sorted(in_dict.items(), key=entry_f):
@@ -612,7 +653,7 @@ class StorageHandler:
         return _entry_generator()
 
     @staticmethod
-    def _generator_file(in_fp):
+    def _iterator_pickle(in_fp):
         """ Deserialize a file into an iterator of the list of its pickled objects. """
         def _entry_generator():
             try:
@@ -626,15 +667,44 @@ class StorageHandler:
 
         return _entry_generator()
 
+    @staticmethod
+    def _iterator_json(in_fp):
+        """ Deserialize a file into an iterator of Python dictionaries. """
+        def _entry_generator():
+            try:
+                while True:
+                    entry_width = Posting.deserialize_width(in_fp)
+                    serialized_entry = in_fp.read(entry_width).decode('utf-8')
+                    entry = json.loads(serialized_entry)
+                    logger.debug(f'Returning entry {entry} to caller.')
+                    yield entry
+
+            except EOFError:
+                return
+
+        return _entry_generator()
+
 
 class Indexer:
     def __init__(self, corpus, **kwargs):
         self.config = kwargs
+        self.token_dict = dict()
+
         self.tokenizer = Tokenizer()
         self.corpus_path = Path(corpus)
         self.postings_f = lambda e: e[0]  # We are going to sort by the URL (i.e. doc ID).
         # self.postings_f = lambda e: e[1]  # We are going to sort by term frequency.
         self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, **kwargs)
+
+    def get_alias(self, url, token_hash):
+        if token_hash not in self.token_dict:
+            self.token_dict[token_hash] = url
+            return url
+        elif token_hash in self.token_dict and len(self.token_dict[token_hash]) > len(url):
+            self.token_dict[token_hash] = url
+            return url
+        else:
+            return self.token_dict[token_hash]
 
     def index(self):
         logger.info(f"Corpus Path: {self.corpus_path.absolute()}.")
@@ -651,11 +721,12 @@ class Indexer:
 
                 logger.info(f"Tokenizing file {file.name}, in path {'/'.join(file.parts[1:])}.")
                 tokens, url, token_hash = self.tokenizer.tokenize(file)
+                alias_url = self.get_alias(url, token_hash)
                 document_length = sum(t.frequency for t in tokens)
                 document_count += 1
 
                 for token in tokens:
-                    entry = (url, token.frequency / document_length, token.tags, token.document_pos, token_hash, )
+                    entry = (alias_url, token.frequency / document_length, token.tags, token.document_pos, )
                     logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
                     self.storage_handler.write(token.token, entry)
 
