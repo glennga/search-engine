@@ -557,7 +557,8 @@ class Presenter:
                 self.view.next_button.hide()
                 self.view.next_spacer.show()
 
-            self.view.results_label.setText(f'{(lower_bound + 1) if upper_bound != 0 else 0} to {upper_bound} results displayed.')
+            self.view.results_label.setText(f'{(lower_bound + 1) if upper_bound != 0 else 0} '
+                                            f'to {upper_bound} results displayed.')
             self.view.results_list.clear()
             for i, url in enumerate(self.working_results[lower_bound:upper_bound]):
                 logger.debug(f'Adding result URL {url[0]} of score(s) {url[1]} to display.')
