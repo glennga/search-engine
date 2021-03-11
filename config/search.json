@@ -1,12 +1,12 @@
 {
+  "maximumSearchTime": 0.3,
   "presentation": {
     "startingText": "Type in your query and hit search!",
-    "startingWindowSize": [1280, 480],
+    "startingWindowSize": [960, 480],
     "resultItemFontSize": 15,
     "resultsPerPage": 15
   },
   "ranker": {
-    "maximumSearchTime": 0.3,
     "minimumTimePerEntry": 0.05,
     "maxPostings": -1,
     "composite": {
