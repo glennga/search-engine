@@ -187,8 +187,7 @@ class Ranker:
                     break
 
                 # Touch our disk! Get the posting.
-                # posting = Posting(*next(postings).values())
-                posting = Posting(*next(postings))
+                posting = Posting(*next(postings).values())
 
                 self.ranking_handler.pre_augment(posting.url)
                 self.ranking_handler.augment(posting.url, 0, self._tf_idf(posting.frequency, postings_count))
@@ -276,7 +275,8 @@ class Ranker:
                 #     posting_left = Posting(*next(postings_left).values())
                 #     consumed_left += 1
                 consumed_left += 1
-                posting_left = Posting(*next(postings_left))
+                if consumed_left < count_left:
+                    posting_left = Posting(*next(postings_left).values())
 
             elif posting_right.url < posting_left.url:
                 # if last_right_skip is not None and last_right_skip[0] <= posting_left.url and \
@@ -294,7 +294,8 @@ class Ranker:
                 #     posting_right = Posting(*next(postings_right).values())
                 #     consumed_right += 1
                 consumed_right += 1
-                posting_right = Posting(*next(postings_right))
+                if consumed_right < count_right:
+                    posting_right = Posting(*next(postings_right).values())
 
             else:
                 self.ranking_handler.pre_augment(posting_left.url)
@@ -311,11 +312,9 @@ class Ranker:
                 consumed_left += 1
                 consumed_right += 1
                 if consumed_left < count_left:
-                    # posting_left = Posting(*next(postings_left).values())
-                    posting_left = Posting(*next(postings_left))
+                    posting_left = Posting(*next(postings_left).values())
                 if consumed_right < count_right:
-                    # posting_right = Posting(*next(postings_right).values())
-                    posting_right = Posting(*next(postings_right))
+                    posting_right = Posting(*next(postings_right).values())
 
         logger.info(f'Processed all postings of entries {token_left} and {token_right}.')
 
@@ -332,10 +331,9 @@ class Ranker:
                     self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
                     return self.ranking_handler()
 
-                # posting = Posting(*next(postings).values())
+                posting = Posting(*next(postings).values())
                 # if posting.skip_label is not None:
                 #     last_skip = (posting.skip_label, posting.skip_tell, posting.skip_count, )
-                posting = Posting(*next(postings))
 
                 if not self.ranking_handler.contains(posting.url):
                     # if last_skip is not None and last_skip[0] != Posting.END_SKIP_LABEL_MARKER:
@@ -445,6 +443,7 @@ class Retriever:
             try:
                 while True:
                     token, postings_count = next(entry_generator)
+                    # postings = self._generator_json(index_fp)
                     postings = self._generator_pickle(index_fp)
 
                     if token == search_term:
@@ -585,7 +584,7 @@ class Presenter:
 
             # Setup our window.
             self.resize(*self.config['presentation']['startingWindowSize'])
-            self.setWindowTitle('"Watch Out Google" Search Engine')
+            self.setWindowTitle('Omnigenix: Text is Knowledge')
 
             # Setup our central widget.
             self.main_layout = QVBoxLayout()

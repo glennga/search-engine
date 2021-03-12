@@ -68,7 +68,7 @@ def _exhaust(in_fp):
             previous_tell = index_fp.tell()
             token, postings_count = next(search_generator)
             after_tell = index_fp.tell()
-            postings_generator = _generator_json(in_fp)
+            postings_generator = _generator_pickle(in_fp)
             print(f'[{previous_tell} - {after_tell}]: New entry! ({token}, {postings_count})')
 
             current_s = 0

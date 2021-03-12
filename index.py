@@ -359,7 +359,7 @@ class StorageHandler:
             self.component_1 = component_1
             self.component_2 = component_2
 
-    def __init__(self, corpus, postings_f, **kwargs):
+    def __init__(self, corpus, postings_f, alias_f, **kwargs):
         # Ensure that the directory exists first...
         if not os.path.exists(kwargs['storage']['spillDirectory']):
             logger.info(kwargs['storage']['spillDirectory'] + ' not found. Building now.')
@@ -371,6 +371,7 @@ class StorageHandler:
         self.merge_queue = deque()
         self.memory_component = dict()
         self.postings_f = postings_f
+        self.alias_f = alias_f
         self.config = kwargs
         self.config['corpus'] = corpus
 
@@ -488,13 +489,15 @@ class StorageHandler:
 
                 logger.debug(f'Writing token {token} with {len(postings)} postings to disk.')
                 pickle.dump((token, len(postings)), out_fp)
-                # if not is_last_spill:
-                #     for posting in postings:
-                #         pickle.dump(posting, out_fp)
-                # else:
-                #     self._post(postings, postings, len(postings), out_fp)
-                for posting in postings:
-                    pickle.dump(posting, out_fp)
+                if not is_last_spill:
+                    for posting in postings:
+                        pickle.dump(posting, out_fp)
+                else:
+                    # self._post(postings, postings, len(postings), out_fp)
+                    for raw_posting in postings:
+                        posting = Posting(*raw_posting)
+                        posting.url = self.alias_f(posting.url)
+                        pickle.dump(dict(posting), out_fp)
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
@@ -549,15 +552,17 @@ class StorageHandler:
 
             logger.debug(f'Writing token {token} with {posting_count} postings to disk.')
             pickle.dump((token, posting_count), out_fp)
-            # if not is_last_merge:
-            #     for posting in postings_1:
-            #         pickle.dump(posting, out_fp)
-            #         next(postings_2)
-            # else:
-            #     self._post(postings_1, postings_2, posting_count, out_fp)
-            for posting in postings_1:
-                pickle.dump(posting, out_fp)
-                next(postings_2)
+            if not is_last_merge:
+                for posting in postings_1:
+                    pickle.dump(posting, out_fp)
+                    next(postings_2)
+            else:
+                # self._post(postings_1, postings_2, posting_count, out_fp)
+                for raw_posting in postings_1:
+                    posting = Posting(*raw_posting)
+                    posting.url = self.alias_f(posting.url)
+                    pickle.dump(dict(posting), out_fp)
+                    next(postings_2)
 
         l1_labels = list()
         left_token, left_posting_count, is_left_exhausted = _advance(left_component)
@@ -688,27 +693,21 @@ class StorageHandler:
 class Indexer:
     def __init__(self, corpus, **kwargs):
         self.config = kwargs
-        self.token_dict = dict()
+        self.alias_map = dict()
 
         self.tokenizer = Tokenizer()
         self.corpus_path = Path(corpus)
         self.postings_f = lambda e: e[0]  # We are going to sort by the URL (i.e. doc ID).
         # self.postings_f = lambda e: e[1]  # We are going to sort by term frequency.
-        self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, **kwargs)
+        self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, self.alias, **kwargs)
 
-    def get_alias(self, url, token_hash):
-        if token_hash not in self.token_dict:
-            self.token_dict[token_hash] = url
-            return url
-        elif token_hash in self.token_dict and len(self.token_dict[token_hash]) > len(url):
-            self.token_dict[token_hash] = url
-            return url
-        else:
-            return self.token_dict[token_hash]
+    def alias(self, url):
+        return self.alias_map[url]
 
     def index(self):
         logger.info(f"Corpus Path: {self.corpus_path.absolute()}.")
         document_count = 0
+        token_dict = dict()
 
         for subdomain_directory in self.corpus_path.iterdir():
             if not subdomain_directory.is_dir():
@@ -721,12 +720,15 @@ class Indexer:
 
                 logger.info(f"Tokenizing file {file.name}, in path {'/'.join(file.parts[1:])}.")
                 tokens, url, token_hash = self.tokenizer.tokenize(file)
-                alias_url = self.get_alias(url, token_hash)
+                if token_hash not in token_dict:
+                    token_dict[token_hash] = [url]
+                else:
+                    token_dict[token_hash].append(url)
                 document_length = sum(t.frequency for t in tokens)
                 document_count += 1
 
                 for token in tokens:
-                    entry = (alias_url, token.frequency / document_length, token.tags, token.document_pos, )
+                    entry = (url, token.frequency / document_length, token.tags, token.document_pos, )
                     logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
                     self.storage_handler.write(token.token, entry)
 
@@ -735,6 +737,13 @@ class Indexer:
                 # return
 
         # Close the storage handler.
+        representatives = [(min(u, key=lambda a: len(a)), u) for u in token_dict.values()]
+        for representative, urls in representatives:
+            for url in urls:
+                if url not in self.alias_map:
+                    self.alias_map[url] = representative
+                elif url in self.alias_map and self.alias_map[url] != representative:
+                    raise RuntimeError('Illegal state: Stored alias is different than the working alias.')
         self.storage_handler.close(document_count)
 
 
