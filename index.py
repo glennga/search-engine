@@ -23,6 +23,7 @@ logger = __init__.get_logger('Index')
 
 class Tokenizer:
     class Token:
+        """ Data class for a single token within a document. """
         def __init__(self, token, frequency, document_pos, tags):
             self.token = token
             self.frequency = frequency
@@ -33,11 +34,10 @@ class Tokenizer:
             return self.token
 
     class MetaDataToken:
-        text = ""
-        tag = "meta"
-
+        """ Data class for a meta-token, which are handled before tokens themselves. """
         def __init__(self, string):
             self.text = string
+            self.tag = "meta"
 
         def __str__(self):
             return self.text
@@ -49,18 +49,18 @@ class Tokenizer:
     def tokenize(self, file):
         """ :return A list of tokens, the URL, and the token hash associated with this document. """
 
-        # Set up variables and get doc ID from file name.
-        doc_id = file.name.rstrip(".json")
+        # Set up variables and get the path from file name.
+        doc_path = file.name.rstrip(".json")
         tokens = {}  # Use dict for easy lookup, then convert to list before returning.
 
         # Populate the initialized variables from JSON.
-        self.logger.info(f"Now opening file: {doc_id}.json")
+        self.logger.info(f"Now opening file: {doc_path}.json")
         with file.open() as f:
             data = json.loads(f.read())
-            url = data["url"]
+            doc_path = data["url"]
             encoding = data["encoding"]
             content = data["content"].encode()
-        self.logger.info(f"DocID starting with {doc_id[:6]} contains URL {url} with encoding {encoding}.")
+        self.logger.info(f"DocID starting with {doc_path[:6]} contains URL {doc_path} with encoding {encoding}.")
 
         try:
             # Get the XML content from the string.
@@ -81,10 +81,10 @@ class Tokenizer:
                         meta_names_content.append(self.MetaDataToken(content))
                 except Exception as e:
                     self.logger.error(f"tokenize: cannot retrieve metadata for attribute: {meta_name.attrib} "
-                                      f"in docID starting with {doc_id[:6]}: {e}. Skipping this metadata entry.")
+                                      f"in docID starting with {doc_path[:6]}: {e}. Skipping this metadata entry.")
             if len(meta_names_content) > 0:
                 self.logger.info(f"Found metadata for docID starting with "
-                                 f"{doc_id[:6]}: {[content.text for content in meta_names_content]}")
+                                 f"{doc_path[:6]}: {[content.text for content in meta_names_content]}")
 
             # Process the metadata tokens and XML contents.
             token_count = 0
@@ -121,62 +121,85 @@ class Tokenizer:
                             token_count += 1
                     except UnicodeDecodeError as e:
                         self.logger.error(f"Tokenizer: UnicodeDecodeError: {e}. Skipping element in docID "
-                                          f"starting with {doc_id[:6]}.")
+                                          f"starting with {doc_path[:6]}.")
         except etree.ParserError as e:
             self.logger.error(f"Tokenizer: etree.ParserError: {e}. Aborting scanning docID starting "
-                              f"with {doc_id[:6]}.")
-            return list(), url, None
+                              f"with {doc_path[:6]}.")
+            return list(), doc_path, None
 
         tokens = list(tokens.values())
-        self.logger.debug(f"Tokens in URL {url}, docID starting with {doc_id[:6]}: {[token.token for token in tokens]}")
-        return tokens, url, base64.b64encode(hashlib.md5(pickle.dumps(tokens)).digest()).decode('ascii')
+        self.logger.debug(f"Tokens in URL {doc_path}, docID starting with {doc_path[:6]}: {[token.token for token in tokens]}")
+        return tokens, doc_path, base64.b64encode(hashlib.md5(pickle.dumps(tokens)).digest()).decode('ascii')
 
 
 class Posting:
-    """ Class which wraps a posting entry. """
+    """ Class with handles a posting entry with potential skip pointers.
+
+    The width of a posting MUST be fixed from the first pass of the last merge, so a posting consists of two parts:
+    1. The width of the posting (POSTING_WIDTH), which is fixed to 32 bytes (1 byte for each digit).
+    2. The actual posting itself. To account for the fact that we must perform two passes for the last merge, we must
+       also be able to accurately compute the size of the skip information prior to knowing the position of the posting
+       to skip to- hence, we also fix this position to 32 bytes.
+
+    """
     END_SKIP_LABEL_MARKER = '$'
-    SLOT_WIDTH_WIDTH = 32
+    POSTING_WIDTH_WIDTH = 32
+    TELL_WIDTH = 32
 
     @staticmethod
     def serialize_width(width):
-        return width.to_bytes(Posting.SLOT_WIDTH_WIDTH, byteorder='big')
+        return width.to_bytes(Posting.POSTING_WIDTH_WIDTH, byteorder='big')
 
     @staticmethod
     def deserialize_width(in_fp):
-        return int.from_bytes(in_fp.read(Posting.SLOT_WIDTH_WIDTH), 'big')
+        return int.from_bytes(in_fp.read(Posting.POSTING_WIDTH_WIDTH), 'big')
 
     @staticmethod
     def skip_pointer_width(label, tell, count_n):
-        return len(f',"skip_label":"{label}","skip_tell":{tell},"skip_count":{count_n}'.encode('utf-8'))
+        fixed_width_tell = str(tell).zfill(Posting.TELL_WIDTH)
+        return len(f',"skip_label":"{label}","skip_tell":"{fixed_width_tell}","skip_count":{count_n}'.encode('utf-8'))
 
-    def __init__(self, url, frequency, tags, position_v, skip_label=None, skip_tell=None, skip_count=None):
+    def __init__(self, doc_id, url, frequency, tags, position_v, skip_label=None, skip_tell=None, skip_count=None):
+        self.doc_id = doc_id
         self.url = url
         self.frequency = frequency
         self.tags = tags
         self.position_v = position_v
         self.skip_label = skip_label
-        self.skip_tell = skip_tell
         self.skip_count = skip_count
+        if type(skip_tell) == str:
+            self.skip_tell = int(skip_tell)
+        else:
+            self.skip_tell = skip_tell
 
     def __getitem__(self, index):
-        return [
-            self.url, self.frequency, self.tags, self.position_v, self.skip_label, self.skip_tell, self.skip_count
-        ][index]
+        return [self.doc_id, self.url, self.frequency, self.tags,
+                self.position_v, self.skip_label, self.skip_tell, self.skip_count][index]
 
     def __iter__(self):
+        yield 'doc_id', self.doc_id
         yield 'url', self.url
         yield 'frequency', self.frequency
         yield 'tags', self.tags
         yield 'position_v', self.position_v
         if self.skip_label is not None and self.skip_tell is not None:
             yield 'skip_label', self.skip_label
-            yield 'skip_tell', self.skip_tell
+            yield 'skip_tell', str(self.skip_tell).zfill(self.TELL_WIDTH)
             yield 'skip_count', self.skip_count
 
 
 class IndexDescriptor:
-    """ Descriptor for a given index file. Holds a skip list to give positions to "skip" to in the index file. """
+    """ Descriptor for a given index file.
+
+    In addition to holding metadata about the index itself (time of creation, the name of the index, size of the
+    corpus indexed, etc...), this also holds a skip list for our vocabulary. If the vocabulary is too large to fit into
+    memory, a smaller skip probability in the index.json file will allow vocabulary lookup with a skip list whose
+    terminal nodes hold positions to the smallest but closest vocabulary term. From here, an index accessor will scan
+    leftward until they hit their desired word.
+
+    """
     class SkipList:
+        """ Skip list for vocabulary terms. """
         END_LABEL = '$'
         START_LABEL = '^'
 
@@ -352,6 +375,15 @@ class StorageHandler:
        tree requires another pass of our entire index (or some more complex bookkeeping of our index while we build
        it)- but building a skip list can be done after the merge process simply and efficiently by just sampling while
        we build the index.
+    e) To assist searching at runtime, skip pointers are provided for each index entry (whose skip probability is
+       tunable in index.json). This requires two passes at the last merge step: one to determine the positions of the
+       places to skip too, and another to actually write the final postings to disk.
+    f) Duplicate entries (i.e. having the same content) are removed on the final pass. Building the duplicate detector
+       is handled outside of the storage handler.
+
+    At a high level, the index can be thought of as a skip list, where each L0 node contains a token and a singly-linked
+    list (w/ skip pointers) of postings.
+
     """
     class _DoubleComponent:
         """ Simulates a "reset" operation by just keeping another copy of the iterator we can jump back to. """
@@ -472,6 +504,7 @@ class StorageHandler:
         2. Write each <token, inverted list> pair incrementally to the given file pointer. We are using "pickle" to
            serialize each pair.
         3. Randomly sample tokens to build the L1 layer of a skip list (only applicable if this is the last spill).
+        4. If this is last spill (i.e. we have no disk components), serialize and write our postings with skip pointers.
 
         :param is_last_spill: Denotes whether or not to sample tokens for the skip list.
         :return A randomly sampled ordered list of <tokens, byte location> pairs.
@@ -481,23 +514,19 @@ class StorageHandler:
         l1_labels = list()
 
         with open(self.config['storage']['spillDirectory'] + '/' + spill_file, 'wb') as out_fp:
-            ordered_memory_component = sorted(self.memory_component.items(), key=lambda k: k[0])
+            ordered_memory_component = sorted(self.memory_component.items(), key=self.postings_f)
             for token, postings in ordered_memory_component:
                 if is_last_spill and random.random() < self.config['storage']['vocab']['l1Probability']:
                     logger.debug(f'Adding {(token, out_fp.tell(),)} to L1 layer of vocab skip list.')
                     l1_labels.append((token, out_fp.tell(),))
 
                 logger.debug(f'Writing token {token} with {len(postings)} postings to disk.')
-                pickle.dump((token, len(postings)), out_fp)
                 if not is_last_spill:
-                    for posting in postings:
-                        pickle.dump(posting, out_fp)
-                else:
-                    # self._post(postings, postings, len(postings), out_fp)
+                    pickle.dump((token, len(postings)), out_fp)
                     for raw_posting in postings:
-                        posting = Posting(*raw_posting)
-                        posting.url = self.alias_f(posting.url)
-                        pickle.dump(dict(posting), out_fp)
+                        pickle.dump(raw_posting, out_fp)
+                else:
+                    self._post(token, postings, postings, out_fp)
 
         self.memory_component.clear()
         self.merge_queue.append(self.config['storage']['spillDirectory'] + '/' + spill_file)
@@ -520,6 +549,7 @@ class StorageHandler:
            d) If we have exhausted any of the two lists, then write the remainder of the to-be-exhausted list to disk.
         4. While performing the merge, we randomly sample tokens to build the first layer of our skip list. The skip
            list grows with smaller 'skipProbability', and shrinks with larger 'skipProbability'.
+        5. On the last pass, we serialize and write our postings to disk with skip pointers.
 
         :param left_component: Iterator that produces a sequence of token, then posting count, and then postings.
         :param right_component: Iterator that produces a sequence of token, then posting count, and then postings.
@@ -551,18 +581,13 @@ class StorageHandler:
                 l1_labels.append((token, out_fp.tell(), ))
 
             logger.debug(f'Writing token {token} with {posting_count} postings to disk.')
-            pickle.dump((token, posting_count), out_fp)
             if not is_last_merge:
-                for posting in postings_1:
-                    pickle.dump(posting, out_fp)
+                pickle.dump((token, posting_count), out_fp)
+                for raw_posting in postings_1:
+                    pickle.dump(raw_posting, out_fp)
                     next(postings_2)
             else:
-                # self._post(postings_1, postings_2, posting_count, out_fp)
-                for raw_posting in postings_1:
-                    posting = Posting(*raw_posting)
-                    posting.url = self.alias_f(posting.url)
-                    pickle.dump(dict(posting), out_fp)
-                    next(postings_2)
+                self._post(token, postings_1, postings_2, out_fp)
 
         l1_labels = list()
         left_token, left_posting_count, is_left_exhausted = _advance(left_component)
@@ -603,48 +628,65 @@ class StorageHandler:
 
         return l1_labels
 
-    def _post(self, postings_1, postings_2, posting_count, out_fp):
-        """ Dump our postings to disk and augment postings with skip pointers.
+    def _post(self, token, postings_1, postings_2, out_fp):
+        """ Dump our postings to disk and augment our postings with skip pointers.
 
-        1. Determine which postings will act as anchors (i.e. hold skip pointer endpoints).
-        2. Determine the URLs and file positions associated with our anchors. We cannot do this without exhausting
-           our list first, so iterate through our postings, then "reset" our iterator (use the second iterator).
-        3. Iterate through our postings list again, attach the skip pointers, and write the postings to disk.
+        1. Perform our first pass. This entails determining which documents will act as anchors (i.e. hold skip pointer
+           endpoints). We also perform duplicate elimination and URL aliasing at this step as well (for the sake of
+           determining the proper endpoints).
+        2. Perform the second pass. We must again perform duplicate elimination and URL aliasing, but this time we will
+           write the postings to disk.
+
+        The serialization of choice here is JSON. Initially we tried Pickle, but the serialization here is (for our
+        intent and purpose) non-deterministic. This makes it impossible to accurately calculate the endpoints required
+        for the skip pointers. In order to determine the size of the JSON before reading it, a fixed-width "width" block
+        is reserved before each posting which holds the size we must parse before handing this off to the JSON
+        deserializer.
 
         """
         def _serialize(_posting):
             return json.dumps(dict(_posting), separators=(',', ':')).encode('utf-8')
 
-        slot_endpoints = list(
-            i for i in range(posting_count) if i != 0 and
-            random.random() < self.config['storage']['posting']['skipProbability'])
-        slot_deltas = (
-            [slot_endpoints[i + 1] - slot_endpoints[i] for i in range(len(slot_endpoints) - 1)]
-            + [posting_count - slot_endpoints[-1]]
-        ) if len(slot_endpoints) > 0 else [posting_count]
-        slots = dict(zip(slot_endpoints, slot_deltas))
-        logger.debug(f'The following postings will be anchors in our skip list: {slot_endpoints}')
-
-        logger.debug('Performing pass #1: Finding the URLs and tells associated with the anchor slots.')
+        logger.debug('Performing pass #1: Finding the documents and tells associated with the anchor slots.')
+        visited_set, slot_set, previous_slot, slot_count = set(), set(), 0, 0
         anchor_queue, out_tell = deque(), out_fp.tell()
         for i, raw_posting in enumerate(postings_1):
-            posting = Posting(*raw_posting)
-            serialized_posting = _serialize(posting)
-            if i in slot_endpoints:
-                out_tell += Posting.skip_pointer_width(out_tell, self.postings_f(raw_posting), slots[i])
-                anchor_queue.append((out_tell, self.postings_f(raw_posting), slots[i]))
-            out_tell += Posting.SLOT_WIDTH_WIDTH + len(serialized_posting)
-        out_tell += Posting.skip_pointer_width(out_tell, Posting.END_SKIP_LABEL_MARKER, slot_deltas[-1])
-        anchor_queue.append((out_tell, Posting.END_SKIP_LABEL_MARKER, slot_deltas[-1]))
+            posting = Posting(*dict(raw_posting).values())
+            posting.url = self.alias_f(raw_posting.url)
+            if posting.url not in visited_set:
+                slot_count += 1
+                visited_set.add(posting.url)
+                serialized_posting = _serialize(posting)
+                if i != 0 and random.random() < self.config['storage']['posting']['skipProbability']:
+                    slot_delta = slot_count - previous_slot - 1
+                    out_tell += Posting.skip_pointer_width(self.postings_f(raw_posting), 0, slot_delta)
+                    anchor_queue.append((out_tell, self.postings_f(raw_posting), slot_delta))
+                    previous_slot = slot_count
+                    slot_set.add(i)
+                out_tell += Posting.POSTING_WIDTH_WIDTH + len(serialized_posting)
+        out_tell += Posting.skip_pointer_width(Posting.END_SKIP_LABEL_MARKER, 0, slot_count - previous_slot)
+        anchor_queue.append((out_tell, Posting.END_SKIP_LABEL_MARKER, slot_count - previous_slot))
+
+        before_meta_tell = out_fp.tell()
+        pickle.dump((token, len(visited_set)), out_fp)
+        after_meta_tell = out_fp.tell()
+        tell_to_add = after_meta_tell - before_meta_tell
+        visited_set.clear()
 
         logger.debug('Performing pass #2: Write the final results to disk.')
         for i, raw_posting in enumerate(postings_2):
-            posting = Posting(*raw_posting)
-            if i == 0 or i in slot_endpoints:
-                posting.skip_tell, posting.skip_label, posting.skip_count = anchor_queue.popleft()
-            serialized_posting = _serialize(posting)
-            out_fp.write(Posting.serialize_width(len(serialized_posting)))
-            out_fp.write(serialized_posting)
+            raw_posting.url = self.alias_f(raw_posting.url)
+            if raw_posting.url not in visited_set:
+                visited_set.add(raw_posting.url)
+                posting = Posting(*dict(raw_posting).values())
+                if i == 0 or i in slot_set:
+                    posting.skip_tell, posting.skip_label, posting.skip_count = anchor_queue.popleft()
+                    posting.skip_tell += tell_to_add
+                serialized_posting = _serialize(posting)
+                out_fp.write(Posting.serialize_width(len(serialized_posting)))
+                out_fp.write(serialized_posting)
+
+        pass
 
     @staticmethod
     def _iterator_dict(in_dict, entry_f):
@@ -691,18 +733,19 @@ class StorageHandler:
 
 
 class Indexer:
+    """ The entry point for this program. """
     def __init__(self, corpus, **kwargs):
         self.config = kwargs
         self.alias_map = dict()
 
         self.tokenizer = Tokenizer()
         self.corpus_path = Path(corpus)
-        self.postings_f = lambda e: e[0]  # We are going to sort by the URL (i.e. doc ID).
+        self.postings_f = lambda e: e[0]  # We are going to sort by the document ID.
         # self.postings_f = lambda e: e[1]  # We are going to sort by term frequency.
         self.storage_handler = StorageHandler(str(self.corpus_path.absolute()), self.postings_f, self.alias, **kwargs)
 
-    def alias(self, url):
-        return self.alias_map[url]
+    def alias(self, doc_id):
+        return self.alias_map[doc_id]
 
     def index(self):
         logger.info(f"Corpus Path: {self.corpus_path.absolute()}.")
@@ -727,8 +770,13 @@ class Indexer:
                 document_length = sum(t.frequency for t in tokens)
                 document_count += 1
 
+                document_id = str(uuid.uuid4()).replace('-', '')
+                if len(document_id) != 32:
+                    raise RuntimeError("Document ID is not a fixed width!")
+
                 for token in tokens:
-                    entry = (url, token.frequency / document_length, token.tags, token.document_pos, )
+                    entry = Posting(document_id, url, token.frequency / document_length, token.tags[:100],
+                                    token.document_pos, )
                     logger.debug(f"Now passing token to storage handler: {token.token}: {entry}")
                     self.storage_handler.write(token.token, entry)
 
@@ -736,7 +784,7 @@ class Indexer:
                 # self.storage_handler.close(document_count)
                 # return
 
-        # Close the storage handler.
+        # Close the storage handler. We construct a map of aliases to aid in duplicate elimination.
         representatives = [(min(u, key=lambda a: len(a)), u) for u in token_dict.values()]
         for representative, urls in representatives:
             for url in urls:
