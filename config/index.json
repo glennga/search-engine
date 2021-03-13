@@ -6,7 +6,7 @@
       "maxSkipHeight": 20
     },
     "posting": {
-      "skipProbability": 0.2
+      "skipProbability": 0.05
     },
     "spillThreshold": 1000000,
     "spillDirectory": "out/spill",
