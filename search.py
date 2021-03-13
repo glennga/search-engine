@@ -27,54 +27,90 @@ logger = __init__.get_logger('Search')
 class Ranker:
     """ Given a collection of postings, return an iterator that returns URLs in ranked order. """
     class RankingHandler:
-        """ Mainly for debugging purposes. Switch to the value based method when not debugging. """
-        def __init__(self, is_v):
+        """ Handle the maintenance around a list of postings.
+
+        1. A user isn't going to go through all returned URLs, hence it makes sense to bound the number of rankings we
+           have to work with. This is tunable in search.json.
+        2. Prior to adding a new document, we ensure that the invariant above is maintained. If we reach our size limit,
+           then we evict the document with the smallest ranking prior to adding a new one.
+        3. This class also handles URL parsing. Profiling revealed that repeated calls to urllib.parse was fairly
+           expensive, so we now only perform this once per new URL.
+        4. To support the use of skip pointers when performing an intersection, we also provide a "next_largest"
+           method, which we can perform in sub-linear time due to maintaining a sorted list of document IDs.
+
+        """
+        def __init__(self, **kwargs):
+            self.maximum_size = kwargs['ranker']['maximumSearchEntries']
+            self.doc_ids = SortedList()
+            self.document_v = dict()
             self.rankings = dict()
-            self.urls = SortedList()
-            self.is_v = is_v
+            self.url_depths = dict()
+            self.urls = dict()
 
         def reset(self):
+            self.document_v.clear()
             self.rankings.clear()
+            self.doc_ids.clear()
+            self.url_depths.clear()
+            self.urls.clear()
 
-        def pre_augment(self, url):
-            if url not in self.rankings:
-                self.rankings[url] = [0, 0, 0, 0] if not self.is_v else 0
-                self.urls.add(url)
+        def setup(self, doc_id, url):
+            if doc_id in self.doc_ids:
+                pass
+            elif len(self.rankings) >= self.maximum_size:
+                smallest_ranking = None
+                for i, (doc_id, v) in enumerate(self.rankings.items()):
+                    if i == 0:
+                        smallest_ranking = (doc_id, v, )
+                    elif smallest_ranking[1] < v:
+                        smallest_ranking = (doc_id, v, )
 
-        def augment(self, url, i, v):
-            if self.is_v:
-                self.rankings[url] += v
+                del self.rankings[smallest_ranking[0]]
+                del self.document_v[smallest_ranking[0]]
+                self.doc_ids.remove(smallest_ranking[0])
+
+            self.urls[doc_id] = url
+            if url not in self.url_depths:
+                self.url_depths[url] = urlparse(url).path.split('/')
+
+        def add(self, doc_id, v):
+            if doc_id in self.doc_ids:
+                self.rankings[doc_id] += v
             else:
-                self.rankings[url][i] += v
+                self.rankings[doc_id] = v
+                self.doc_ids.add(doc_id)
 
-        def remove(self, url):
-            if url in self.rankings:
-                del self.rankings[url]
-                self.urls.remove(url)
+        def record(self, doc_id, document_v, entry_k):
+            enhanced_v = list((d, entry_k) for d in document_v)
+            if doc_id in self.document_v:
+                self.document_v[doc_id] = list(heapq.merge(self.document_v[doc_id], enhanced_v, key=lambda a: a[0]))
+            else:
+                self.document_v[doc_id] = enhanced_v
 
-        def replace(self, old_url, new_url):
-            self.rankings[new_url] = self.rankings[old_url]
-            self.remove(old_url)
+        def remove(self, doc_id):
+            if doc_id in self.doc_ids:
+                del self.rankings[doc_id]
+                del self.document_v[doc_id]
+                self.doc_ids.remove(doc_id)
 
-        def contains(self, url):
-            return url in self.rankings
+        def contains(self, doc_id):
+            return doc_id in self.doc_ids
 
-        def next_largest(self, url):
-            largest_index = bisect.bisect_right(self.urls, url)
-            if largest_index == len(self.urls):
+        def next_largest(self, doc_id):
+            largest_index = bisect.bisect_right(self.doc_ids, doc_id)
+            if largest_index == len(self.doc_ids):
                 return None
             else:
-                return self.urls[largest_index]
+                return self.doc_ids[largest_index]
 
         def __call__(self, *args, **kwargs):
-            if self.is_v:
-                return sorted(self.rankings.items(), key=lambda j: j[1], reverse=True)
-            else:
-                return sorted(self.rankings.items(), key=lambda j: sum(j[1]), reverse=True)
+            return sorted(self.rankings.items(), key=lambda j: j[1], reverse=True)
+
+    # Unfortunately we are unable to accurately factor this into time budget.
+    ESTIMATED_GRAM_BOOST_TIME_S = 0.07
 
     def __init__(self, **kwargs):
-        self.ESTIMATED_GRAM_BOOST_TIME_S = 0.05
-        self.ranking_handler = self.RankingHandler(True)
+        self.ranking_handler = self.RankingHandler(**kwargs)
         self.config = kwargs
 
         if self.config['ranker']['maxPostings'] < 0:
@@ -107,7 +143,7 @@ class Ranker:
 
     def _depth_value(self, url):
         """ Current formula: the path length is inversely proportional to this value. """
-        return self.config['ranker']['composite']['urlDepth'] * 1.0 / len(urlparse(url).path.split('/'))
+        return self.config['ranker']['composite']['urlDepth'] * len(self.ranking_handler.url_depths[url])
 
     def _ngram_boost(self, combined_document_pos, search_length, tolerance):
         """ Current formula: If we find a contiguous sequence of {search_length} positions, increase rank. """
@@ -129,25 +165,27 @@ class Ranker:
                 self.prev = args[0][1][0]
                 return self.flag
 
-        for url, document_pos in combined_document_pos.items():
+        for doc_id, document_pos in combined_document_pos.items():
             if len(document_pos) < search_length:
                 continue
 
+            rank_to_add = 0
             for _, g in itertools.groupby(enumerate(document_pos), GroupByKey()):
                 consecutive_grouping = list(map(operator.itemgetter(1), g))
                 if len(set(c[1] for c in consecutive_grouping)) >= search_length:
-                    self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
+                    rank_to_add += 1.0 * self.config["ranker"]["documentPos"]["weight"]
+            if rank_to_add > 0:
+                self.ranking_handler.add(doc_id, rank_to_add)
 
     def _bigram_boost(self, combined_document_pos):
         """ Current formula: if the tokens share document positions close to each other, increase rank. """
-        for url, document_pos in combined_document_pos.items():
+        for doc_id, document_pos in combined_document_pos.items():
             if len(document_pos) <= 1:
                 continue
 
             for i in range(len(document_pos) - 1):
                 if abs(document_pos[i][0] - document_pos[i + 1][0]) <= 1:
-                    # logger.debug(f"{url} has potential bigrams, increase rank.")
-                    self.ranking_handler.augment(url, 3, 1.0 * self.config["ranker"]["documentPos"]["weight"])
+                    self.ranking_handler.add(doc_id, 1.0 * self.config["ranker"]["documentPos"]["weight"])
                     break
 
     def disjunctive_rank(self, index_entries, pos_tolerance, time_budget):
@@ -170,7 +208,6 @@ class Ranker:
         :return: List of URLs in ranked order.
         """
         self.ranking_handler.reset()
-        combined_document_pos = dict()  # {url: [combined_document_pos]}
         t_entry_prev = time.process_time()
         allocated_search_time = [
             t_entry_prev + max((time_budget - self.ESTIMATED_GRAM_BOOST_TIME_S) / len(index_entries),
@@ -189,22 +226,21 @@ class Ranker:
                 # Touch our disk! Get the posting.
                 posting = Posting(*next(postings).values())
 
-                self.ranking_handler.pre_augment(posting.url)
-                self.ranking_handler.augment(posting.url, 0, self._tf_idf(posting.frequency, postings_count))
-                self.ranking_handler.augment(posting.url, 1, self._tag_value(posting.tags))
-                self.ranking_handler.augment(posting.url, 2, self._depth_value(posting.url))
+                self.ranking_handler.setup(posting.doc_id, posting.url)
+                rank_to_add = self._tf_idf(posting.frequency, postings_count) + \
+                    self._tag_value(posting.tags) + \
+                    self._depth_value(posting.url)
+                self.ranking_handler.add(posting.doc_id, rank_to_add)
 
                 # Track the token document positions for later.
-                new_document_pos = list((d, k) for d in posting.position_v)
-                combined_document_pos[posting.url] = new_document_pos if posting.url not in combined_document_pos else \
-                    list(heapq.merge(combined_document_pos[posting.url], new_document_pos, key=lambda a: a[0]))
+                self.ranking_handler.record(posting.doc_id, posting.position_v, k)
 
             t_current = time.process_time()
             logger.info(f'Processed {p + 1} number of postings.')
             logger.info(f'Time to rank entry {token}: {1000.0 * (t_current - t_entry_prev)}ms.')
             t_entry_prev = t_current
 
-        self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+        self._ngram_boost(self.ranking_handler.document_v, len(index_entries), pos_tolerance)
         return self.ranking_handler()
 
     def conjunctive_rank(self, index_entries, pos_tolerance, time_budget):
@@ -220,7 +256,7 @@ class Ranker:
         6. Remove duplicates (after the fact), by utilizing the token_hashes of all resultant URLs.
         7. Boost the ranks of URLs that have n-grams.
         8. Return our results.
-        9. If at any point while intersecting, we run out of time, boost the n-grams and return the sorted list.
+        9. If at any point while intersecting we run out of time, boost the n-grams and return the sorted list.
 
         :param index_entries: List of lists of token, document count, iterator of postings, and a skip function.
                               [(token, document count, [posting 1, posting 2, ...] ), ...]
@@ -231,7 +267,6 @@ class Ranker:
         if len(index_entries) <= 1:
             return self.disjunctive_rank(index_entries, pos_tolerance, time_budget)
         self.ranking_handler.reset()
-        combined_document_pos = dict()
 
         # We process the entry with the least cardinality first.
         sorted_entries = sorted(index_entries, key=lambda i: i[1])
@@ -244,130 +279,120 @@ class Ranker:
         posting_right = Posting(*next(postings_right).values())
 
         # Pointers for the intersection.
-        consumed_left, consumed_right = 0, 0
-        # last_left_skip, last_right_skip = None, None
+        consumed_left, consumed_right = 1, 1
+        last_left_skip, last_right_skip = None, None
 
         while consumed_left < count_left and consumed_right < count_right:
             if time.process_time() > t_limit:
                 logger.info(f'Exiting early. Processed {consumed_left} postings of entry {token_left} and'
                             f' {consumed_right} postings of entry {token_right}.')
-                self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+                self._ngram_boost(self.ranking_handler.document_v, len(index_entries), pos_tolerance)
                 return self.ranking_handler()
 
-            # if posting_left.skip_label is not None:
-            #     last_left_skip = (posting_left.skip_label, posting_left.skip_tell, posting_left.skip_count, )
-            # if posting_right.skip_label is not None:
-            #     last_right_skip = (posting_right.skip_label, posting_right.skip_tell, posting_right.skip_count, )
+            if posting_left.skip_label is not None:
+                last_left_skip = (posting_left.skip_label, posting_left.skip_tell, posting_left.skip_count, )
+            if posting_right.skip_label is not None:
+                last_right_skip = (posting_right.skip_label, posting_right.skip_tell, posting_right.skip_count, )
 
-            if posting_left.url < posting_right.url:
-                # if last_left_skip is not None and last_left_skip[0] <= posting_right.url and \
-                #         last_left_skip[0] != Posting.END_SKIP_LABEL_MARKER:
-                #     skip_left(last_left_skip[1])
-                #     posting_left = Posting(*next(postings_left).values())
-                #     consumed_left += last_left_skip[2]
-                #     last_left_skip = None
-                #
-                # elif last_left_skip is not None and last_left_skip[0] < posting_right.url:
-                #     skip_left(last_left_skip[1])
-                #     consumed_left = count_left
-                #
-                # else:
-                #     posting_left = Posting(*next(postings_left).values())
-                #     consumed_left += 1
-                consumed_left += 1
-                if consumed_left < count_left:
+            if posting_left.doc_id < posting_right.doc_id:
+                if last_left_skip is not None and last_left_skip[0] <= posting_right.doc_id and \
+                        last_left_skip[0] != Posting.END_SKIP_LABEL_MARKER:
+                    skip_left(last_left_skip[1])
                     posting_left = Posting(*next(postings_left).values())
+                    consumed_left += last_left_skip[2]
+                    last_left_skip = None
 
-            elif posting_right.url < posting_left.url:
-                # if last_right_skip is not None and last_right_skip[0] <= posting_left.url and \
-                #         last_right_skip[0] != Posting.END_SKIP_LABEL_MARKER:
-                #     skip_right(last_right_skip[1])
-                #     posting_right = Posting(*next(postings_right).values())
-                #     consumed_right += last_right_skip[2]
-                #     last_right_skip = None
-                #
-                # elif last_right_skip is not None and last_right_skip[0] < posting_left.url:
-                #     skip_right(last_right_skip[1])
-                #     consumed_right = count_right
-                #
-                # else:
-                #     posting_right = Posting(*next(postings_right).values())
-                #     consumed_right += 1
-                consumed_right += 1
-                if consumed_right < count_right:
+                elif last_left_skip is not None and last_left_skip[0] < posting_right.doc_id:
+                    skip_left(last_left_skip[1])
+                    consumed_left = count_left
+
+                else:
+                    posting_left = Posting(*next(postings_left).values())
+                    consumed_left += 1
+
+            elif posting_right.doc_id < posting_left.doc_id:
+                if last_right_skip is not None and last_right_skip[0] <= posting_left.doc_id and \
+                        last_right_skip[0] != Posting.END_SKIP_LABEL_MARKER:
+                    skip_right(last_right_skip[1])
                     posting_right = Posting(*next(postings_right).values())
+                    consumed_right += last_right_skip[2]
+                    last_right_skip = None
+
+                elif last_right_skip is not None and last_right_skip[0] < posting_left.doc_id:
+                    skip_right(last_right_skip[1])
+                    consumed_right = count_right
+
+                else:
+                    posting_right = Posting(*next(postings_right).values())
+                    consumed_right += 1
 
             else:
-                self.ranking_handler.pre_augment(posting_left.url)
-                self.ranking_handler.augment(posting_left.url, 0, self._tf_idf(posting_left.frequency, count_left))
-                self.ranking_handler.augment(posting_left.url, 0, self._tf_idf(posting_right.frequency, count_right))
-                self.ranking_handler.augment(posting_left.url, 1, self._tag_value(posting_left.tags))
-                self.ranking_handler.augment(posting_left.url, 1, self._tag_value(posting_right.tags))
-                self.ranking_handler.augment(posting_left.url, 2, self._depth_value(posting_left.url))
-                combined_document_pos[posting_left.url] = list(heapq.merge(
-                    list((d, 0) for d in posting_left.position_v),
-                    list((d, 1) for d in posting_right.position_v),
-                    key=lambda a: a[0]))
+                self.ranking_handler.setup(posting_left.doc_id, posting_left.url)
+                rank_to_add = self._tf_idf(posting_left.frequency, count_left) + \
+                    self._tf_idf(posting_right.frequency, count_right) + \
+                    self._tag_value(posting_left.tags) + \
+                    self._tag_value(posting_right.tags) + \
+                    self._depth_value(posting_left.url)
+                self.ranking_handler.add(posting_left.doc_id, rank_to_add)
+                self.ranking_handler.record(posting_left.doc_id, posting_left.position_v, 0)
+                self.ranking_handler.record(posting_left.doc_id, posting_right.position_v, 1)
 
-                consumed_left += 1
-                consumed_right += 1
                 if consumed_left < count_left:
                     posting_left = Posting(*next(postings_left).values())
+                    consumed_left += 1
                 if consumed_right < count_right:
                     posting_right = Posting(*next(postings_right).values())
+                    consumed_right += 1
 
         logger.info(f'Processed all postings of entries {token_left} and {token_right}.')
 
         # Intersect the remaining entries.
         for k, entry in enumerate(sorted_entries[2:]):
+            remove_set = set(self.ranking_handler.doc_ids)
             token, count_n, postings, skip_f = entry
-            keep_list = list()
             consumed = 0
-            # last_skip = None
+            last_skip = None
 
             while consumed < count_n:
                 if time.process_time() > t_limit:
                     logger.info(f'Exiting early. Processed {consumed} postings of entry {token}.')
-                    self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+                    self._ngram_boost(self.ranking_handler.document_v, len(index_entries), pos_tolerance)
                     return self.ranking_handler()
 
                 posting = Posting(*next(postings).values())
-                # if posting.skip_label is not None:
-                #     last_skip = (posting.skip_label, posting.skip_tell, posting.skip_count, )
+                if posting.skip_label is not None:
+                    last_skip = (posting.skip_label, posting.skip_tell, posting.skip_count, )
 
-                if not self.ranking_handler.contains(posting.url):
-                    # if last_skip is not None and last_skip[0] != Posting.END_SKIP_LABEL_MARKER:
-                    #     next_largest = self.ranking_handler.next_largest(posting.url)
-                    #     if next_largest is None:
-                    #         break
-                    #
-                    #     elif next_largest < last_skip[0]:
-                    #         skip_f(last_skip[1])
-                    #         consumed += last_skip[2]
-                    #         last_skip = None
-                    #
-                    #     else:
-                    #         consumed += 1
-                    #
-                    # elif last_skip is not None:
-                    #     consumed += 1
-                    consumed += 1
+                if not self.ranking_handler.contains(posting.doc_id):
+                    if last_skip is not None and last_skip[0] != Posting.END_SKIP_LABEL_MARKER:
+                        next_largest = self.ranking_handler.next_largest(posting.doc_id)
+                        if next_largest is None:
+                            break
+                        elif next_largest < last_skip[0]:
+                            skip_f(last_skip[1])
+                            consumed += last_skip[2]
+                            last_skip = None
+                        else:
+                            consumed += 1
+                    elif last_skip is not None:
+                        consumed += 1
 
                 else:
-                    keep_list.append(posting.url)
-                    self.ranking_handler.augment(posting.url, 0, self._tf_idf(posting.frequency, count_n))
-                    self.ranking_handler.augment(posting.url, 1, self._tag_value(posting.tags))
-                    self.ranking_handler.augment(posting.url, 2, self._depth_value(posting.url))
-                    combined_document_pos[posting.url] = list(heapq.merge(
-                        combined_document_pos[posting.url],
-                        list((d, k) for d in posting.position_v),
-                        key=lambda a: a[0]))
+                    if posting.doc_id in remove_set:
+                        remove_set.remove(posting.doc_id)
+                    self.ranking_handler.setup(posting.doc_id, posting.url)
+                    rank_to_add = self._tf_idf(posting.frequency, count_n) + \
+                        self._tag_value(posting.tags) + \
+                        self._depth_value(posting.url)
+                    self.ranking_handler.add(posting.doc_id, rank_to_add)
+                    self.ranking_handler.record(posting.doc_id, posting.position_v, k)
+                    consumed += 1
 
             logger.info(f'Processed all postings of entry {token}.')
-            for url in list(heapq.merge(keep_list, self.ranking_handler.urls)):
-                self.ranking_handler.remove(url)
+            for doc_id in remove_set:
+                self.ranking_handler.remove(doc_id)
 
-        self._ngram_boost(combined_document_pos, len(index_entries), pos_tolerance)
+        self._ngram_boost(self.ranking_handler.document_v, len(index_entries), pos_tolerance)
         return self.ranking_handler()
 
 
@@ -443,8 +468,8 @@ class Retriever:
             try:
                 while True:
                     token, postings_count = next(entry_generator)
-                    # postings = self._generator_json(index_fp)
-                    postings = self._generator_pickle(index_fp)
+                    postings = self._generator_json(index_fp)
+                    # postings = self._generator_pickle(index_fp)
 
                     if token == search_term:
                         logger.info(f'Word {search_term} found!')
@@ -464,8 +489,8 @@ class Retriever:
         logger.info(f'Time to search words in skip list: {1000.0 * (t1 - t0)}ms.')
         ranking_output = self.ranker.conjunctive_rank(
             index_entries=ranking_input,
-            pos_tolerance=len(original_search_terms) - len(stopped_search_terms),
-            time_budget=self.config['maximumSearchTime'] - (t1 - t0),
+            pos_tolerance=len(original_search_terms) - len(stopped_search_terms) + 1,
+            time_budget=self.config['maximumSearchTime'] - (t1 - t0)
         )
 
         t2 = time.process_time()
