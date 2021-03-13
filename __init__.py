@@ -10,7 +10,7 @@ def get_logger(name):
         os.makedirs("out/logs")
     fh = logging.FileHandler(f"out/logs/{name}.log")
 
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.INFO)
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
 
