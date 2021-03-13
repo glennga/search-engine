@@ -151,7 +151,7 @@ class Ranker:
 
     def _depth_value(self, url):
         """ Current formula: the path length is inversely proportional to this value. """
-        return self.config['ranker']['composite']['urlDepth'] * len(self.ranking_handler.url_depths[url])
+        return self.config['ranker']['composite']['urlDepth'] / len(self.ranking_handler.url_depths[url])
 
     def _ngram_boost(self, combined_document_pos, search_length, tolerance):
         """ Current formula: If we find a contiguous sequence of {search_length} positions, increase rank. """
