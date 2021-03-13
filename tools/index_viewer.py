@@ -45,18 +45,25 @@ def _search(in_fp, in_desc, word):
         print(f'Starting from position {designated_tell}.')
 
     in_fp.seek(designated_tell)
-    search_generator = _generator_pickle(in_fp)
+    # search_generator = _generator_pickle(in_fp)
+    search_generator = _generator_json(in_fp)
     try:
         while True:
             token, postings_count = next(search_generator)
+
             if token == word:
-                return next(search_generator)
-            else:
+                print(f'Word found- {token}!')
+                [print(next(search_generator)) for _ in range(postings_count)]
+                break
+            elif token < word:
+                print(f'Searching... Skipping over word {token}.')
                 [next(search_generator) for _ in range(postings_count)]
+            else:
+                print('Word does not exist!')
+                break
 
     except EOFError:
         print('Word does not exist!')
-        return None
 
 
 def _exhaust(in_fp):
@@ -68,7 +75,7 @@ def _exhaust(in_fp):
             previous_tell = index_fp.tell()
             token, postings_count = next(search_generator)
             after_tell = index_fp.tell()
-            postings_generator = _generator_pickle(in_fp)
+            postings_generator = _generator_json(in_fp)
             print(f'[{previous_tell} - {after_tell}]: New entry! ({token}, {postings_count})')
 
             current_s = 0
@@ -77,6 +84,7 @@ def _exhaust(in_fp):
                 posting = Posting(*next(postings_generator).values())
                 after_tell = index_fp.tell()
                 print(f'[{previous_tell} - {after_tell}]: --- Working posting for URL {current_s}: {dict(posting)}.')
+
                 if posting.skip_label is not None:
                     print(f'[{previous_tell} - {after_tell}]: ------ Has skip pointer to {posting.skip_label} with '
                           f'tell {posting.skip_tell} and skip count {posting.skip_count}.')
@@ -85,7 +93,6 @@ def _exhaust(in_fp):
                         break
                     else:
                         current_s += posting.skip_count
-
                 else:
                     current_s += 1
 
