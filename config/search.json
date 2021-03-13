@@ -7,7 +7,7 @@
     "resultsPerPage": 15
   },
   "ranker": {
-    "maximumSearchEntries": 100,
+    "maximumSearchEntries": 250,
     "minimumTimePerEntry": 0.05,
     "maxPostings": -1,
     "composite": {

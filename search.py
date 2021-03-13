@@ -40,7 +40,11 @@ class Ranker:
 
         """
         def __init__(self, **kwargs):
-            self.maximum_size = kwargs['ranker']['maximumSearchEntries']
+            if kwargs['ranker']['maximumSearchEntries'] > 0:
+                self.maximum_size = kwargs['ranker']['maximumSearchEntries']
+            else:
+                self.maximum_size = math.inf
+
             self.doc_ids = SortedList()
             self.document_v = dict()
             self.rankings = dict()
@@ -55,30 +59,31 @@ class Ranker:
             self.urls.clear()
 
         def setup(self, doc_id, url):
-            if doc_id in self.doc_ids:
-                pass
-            elif len(self.rankings) >= self.maximum_size:
-                smallest_ranking = None
-                for i, (doc_id, v) in enumerate(self.rankings.items()):
-                    if i == 0:
-                        smallest_ranking = (doc_id, v, )
-                    elif smallest_ranking[1] < v:
-                        smallest_ranking = (doc_id, v, )
-
-                del self.rankings[smallest_ranking[0]]
-                del self.document_v[smallest_ranking[0]]
-                self.doc_ids.remove(smallest_ranking[0])
-
-            self.urls[doc_id] = url
             if url not in self.url_depths:
                 self.url_depths[url] = urlparse(url).path.split('/')
 
-        def add(self, doc_id, v):
             if doc_id in self.doc_ids:
-                self.rankings[doc_id] += v
-            else:
-                self.rankings[doc_id] = v
-                self.doc_ids.add(doc_id)
+                return
+            elif len(self.rankings) >= self.maximum_size:
+                smallest_ranking = None
+                for i, (_doc_id, _v) in enumerate(self.rankings.items()):
+                    if i == 0:
+                        smallest_ranking = (_doc_id, _v, )
+                    elif smallest_ranking[1] < _v:
+                        smallest_ranking = (_doc_id, _v, )
+
+                if doc_id != smallest_ranking[0]:
+                    del self.urls[smallest_ranking[0]]
+                    del self.rankings[smallest_ranking[0]]
+                    del self.document_v[smallest_ranking[0]]
+                    self.doc_ids.remove(smallest_ranking[0])
+
+            self.rankings[doc_id] = 0
+            self.doc_ids.add(doc_id)
+            self.urls[doc_id] = url
+
+        def add(self, doc_id, v):
+            self.rankings[doc_id] += v
 
         def record(self, doc_id, document_v, entry_k):
             enhanced_v = list((d, entry_k) for d in document_v)
@@ -91,6 +96,7 @@ class Ranker:
             if doc_id in self.doc_ids:
                 del self.rankings[doc_id]
                 del self.document_v[doc_id]
+                del self.urls[doc_id]
                 self.doc_ids.remove(doc_id)
 
         def contains(self, doc_id):
@@ -104,7 +110,9 @@ class Ranker:
                 return self.doc_ids[largest_index]
 
         def __call__(self, *args, **kwargs):
-            return sorted(self.rankings.items(), key=lambda j: j[1], reverse=True)
+            return list(
+                (self.urls[d[0]], d[1]) for d in sorted(self.rankings.items(), key=lambda j: j[1], reverse=True)
+            )
 
     # Unfortunately we are unable to accurately factor this into time budget.
     ESTIMATED_GRAM_BOOST_TIME_S = 0.07
