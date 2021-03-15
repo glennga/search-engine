@@ -231,7 +231,7 @@ class Ranker:
         :param pos_tolerance: Number of words stopped from the query, which specifies a tolerance for the ngram booster.
         :return: List of URLs in ranked order.
         """
-        if len(index_entries) < 1:
+        if len(index_entries) <= 1:
             return self.disjunctive_rank(index_entries, pos_tolerance)
 
         self.ranking_handler.reset()
@@ -523,7 +523,7 @@ class Presenter:
 
             # Setup our window.
             self.resize(*self.config['presentation']['startingWindowSize'])
-            self.setWindowTitle('"Watch Out Google" Search Engine')
+            self.setWindowTitle('Omnigenix: Text is Knowledge')
 
             # Setup our central widget.
             self.main_layout = QVBoxLayout()
